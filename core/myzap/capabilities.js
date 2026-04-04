@@ -247,17 +247,33 @@ function persistCapabilitySnapshot(snapshot, storeLike = store) {
     return normalized;
 }
 
-function buildBackendProfileKey({ apiUrl, idempresa }) {
+function buildBackendProfileKey({ apiUrl, idempresa, idfilial, login }) {
     const normalizedApiUrl = normalizeBaseUrl(apiUrl).toLowerCase();
-    const normalizedCompanyId = String(idempresa || '').trim();
-    if (!normalizedApiUrl && !normalizedCompanyId) {
+    const normalizedLogin = String(login || '').trim().toLowerCase();
+    const normalizedFilialId = String(idfilial || idempresa || '').trim();
+    const identity = normalizedLogin
+        ? `login:${normalizedLogin}`
+        : (normalizedFilialId ? `filial:${normalizedFilialId}` : '');
+
+    if (!normalizedApiUrl && !identity) {
         return '';
     }
-    return `${normalizedApiUrl}|${normalizedCompanyId}`;
+
+    if (!normalizedApiUrl) {
+        return identity;
+    }
+
+    if (!identity) {
+        return normalizedApiUrl;
+    }
+
+    return `${normalizedApiUrl}|${identity}`;
 }
 
 function clearDerivedBackendState(storeLike = store) {
     const keys = [
+        'idfilial',
+        'idempresa',
         'myzap_sessionKey',
         'myzap_sessionName',
         'myzap_promptId',
@@ -271,6 +287,14 @@ function clearDerivedBackendState(storeLike = store) {
         'myzap_backendApiToken',
         'clickexpress_apiUrl',
         'clickexpress_queueToken',
+        'backendAuthToken',
+        'backendAuthExpiresAt',
+        'backendAuthAuthenticatedAt',
+        'backendAuthApiUrl',
+        'backendAuthLogin',
+        'backendAuthUser',
+        'backendAuthFilial',
+        'backendAuthPayload',
         'myzap_capabilitySnapshot',
         'myzap_capabilityRemoteHints',
         'myzap_tokenSyncLastAt',
@@ -410,12 +434,11 @@ function buildCapabilityEntry({ capability, preferences, remoteHints, previousSn
     }
 
     if (capability === 'supportsTokenSync') {
-        const enabled = Boolean(context.supportsIaConfigEnabled && context.iaAtiva === true);
-        if (remoteFetchOk || context.hasIaValue || previousEntry) {
+        if (previousEntry && !remoteFetchOk) {
             return {
-                enabled,
-                source: 'inference',
-                reason: enabled ? 'ia_supported_and_active' : 'ia_unavailable_or_inactive',
+                enabled: Boolean(previousEntry.enabled),
+                source: 'cached',
+                reason: previousEntry.reason || 'cached_previous_snapshot',
                 mode
             };
         }
@@ -423,7 +446,7 @@ function buildCapabilityEntry({ capability, preferences, remoteHints, previousSn
         return {
             enabled: definition.defaultEnabled,
             source: 'default',
-            reason: definition.defaultEnabled ? 'default_enabled' : 'default_disabled',
+            reason: definition.defaultEnabled ? 'default_enabled' : 'default_disabled_pending_remote_hint',
             mode
         };
     }
@@ -646,7 +669,8 @@ function getBackendApiConfig(storeLike = store) {
         rawPrimaryApiUrl
     );
     const backendApiToken = String(
-        storeLike.get('myzap_backendApiToken')
+        storeLike.get('backendAuthToken')
+        || storeLike.get('myzap_backendApiToken')
         || storeLike.get('clickexpress_queueToken')
         || storeLike.get('apiToken')
         || ''

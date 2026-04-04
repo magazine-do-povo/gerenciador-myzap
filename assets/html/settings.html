@@ -9,21 +9,9 @@
 
   <body>
     <div class="card">
-      <h5 class="text-center">Configuracoes da API</h5>
+      <h5 class="text-center">Configuracoes do Hub</h5>
 
       <form id="cfg">
-        <div class="input-group mb-3">
-          <span class="input-group-text form-icon">🏢</span>
-          <input
-            class="form-control"
-            id="idempresa"
-            type="number"
-            min="1"
-            placeholder="ID da empresa"
-            required
-          />
-        </div>
-
         <div class="input-group mb-3">
           <span class="input-group-text form-icon">🌐</span>
           <input
@@ -35,14 +23,36 @@
           />
         </div>
 
-        <div class="input-group mb-4">
-          <span class="input-group-text form-icon">🔑</span>
+        <div class="input-group mb-3">
+          <span class="input-group-text form-icon">👤</span>
           <input
             class="form-control"
-            id="token"
+            id="login"
             type="text"
-            placeholder="Token de autenticacao da API"
+            placeholder="Usuario do Hub"
             required
+          />
+        </div>
+
+        <div class="input-group mb-3">
+          <span class="input-group-text form-icon">🔒</span>
+          <input
+            class="form-control"
+            id="password"
+            type="password"
+            placeholder="Senha do Hub"
+            required
+          />
+        </div>
+
+        <div class="input-group mb-4">
+          <span class="input-group-text form-icon">🏢</span>
+          <input
+            class="form-control"
+            id="idfilial"
+            type="text"
+            placeholder="ID da filial resolvido automaticamente apos o login"
+            readonly
           />
         </div>
 

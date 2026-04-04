@@ -15,9 +15,9 @@ const Store = require('electron-store');
 const { info, warn, error, debug } = require('../myzap/myzapLogger');
 const {
     isCapabilityEnabled,
-    getCapabilityEntry,
-    getBackendApiConfig
+    getCapabilityEntry
 } = require('../myzap/capabilities');
+const { ensureBackendSession } = require('../myzap/backendAuth');
 
 const store = new Store();
 const MYZAP_API_URL = 'http://localhost:5555/';
@@ -30,11 +30,6 @@ let ativo = false;
 let timer = null;
 let ultimaExecucaoEm = null;
 let ultimoErro = null;
-
-function normalizeBaseUrl(url) {
-    if (!url || typeof url !== 'string') return '';
-    return url.endsWith('/') ? url : `${url}/`;
-}
 
 function isIaAtiva() {
     const iaAtiva = store.get('myzap_iaAtiva');
@@ -107,14 +102,13 @@ async function buscarTokensConsumidosLocal() {
  * Sincronizacao incremental: envia apenas o delta.
  */
 async function enviarTokensParaApiPrincipal(tokensTotal, tokensDelta) {
-    const {
-        backendApiUrl,
-        backendApiToken
-    } = getBackendApiConfig(store);
+    const backendSession = await ensureBackendSession({ storeLike: store });
     const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
-    const idempresa = String(store.get('idempresa') || '').trim();
+    const idfilial = String(backendSession?.idfilial || store.get('idfilial') || store.get('idempresa') || '').trim();
+    const backendApiUrl = String(backendSession?.apiUrl || '').trim();
+    const backendAuthorization = String(backendSession?.authorization || '').trim();
 
-    if (!backendApiUrl || !backendApiToken || !sessionKey) {
+    if (!backendApiUrl || !backendAuthorization || !sessionKey) {
         return { ok: false, error: 'CONFIG_INCOMPLETA' };
     }
 
@@ -124,17 +118,17 @@ async function enviarTokensParaApiPrincipal(tokensTotal, tokensDelta) {
     try {
         const payload = {
             sessionKey,
-            idempresa,
+            idfilial,
             tokens_total: tokensTotal,
             tokens_delta: tokensDelta,
             data_sincronizacao: new Date().toISOString()
         };
 
-        const res = await fetch(`${normalizeBaseUrl(backendApiUrl)}parametrizacao-myzap/tokens/sync`, {
+        const res = await fetch(`${backendApiUrl}parametrizacao-myzap/tokens/sync`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${backendApiToken}`
+                Authorization: backendAuthorization
             },
             body: JSON.stringify(payload),
             signal: ctrl.signal

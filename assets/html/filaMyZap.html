@@ -68,23 +68,30 @@
 
                 <!-- Log em tempo real -->
                 <div class="fila-card mt-3">
-                    <div class="d-flex justify-content-between align-items-center mb-2">
-                        <strong>Log da fila (tempo real)</strong>
-                        <div class="d-flex gap-2 align-items-center">
-                            <select id="log-level-filter" class="form-select form-select-sm log-level-select">
-                                <option value="all" selected>Todos</option>
-                                <option value="info">Info</option>
-                                <option value="warn">Aviso</option>
-                                <option value="error">Erro</option>
-                                <option value="debug">Debug</option>
-                            </select>
-                            <button id="btn-clear-log" class="btn btn-sm btn-outline-secondary" type="button" title="Limpar log">
-                                Limpar
-                            </button>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <strong>Ultimas mensagens processadas</strong>
+                            <div class="text-muted-small">Historico local com status de envio da fila.</div>
                         </div>
+                        <span id="queue-total-history" class="badge bg-secondary status-badge">0</span>
                     </div>
-                    <div id="queue-log-container" class="queue-log-container">
-                        <div class="text-center text-muted-small py-3">Aguardando logs...</div>
+                    <div class="table-responsive">
+                        <table class="table table-dark table-sm align-middle mb-0 queue-table">
+                            <thead>
+                                <tr>
+                                    <th>Data</th>
+                                    <th>ID Fila</th>
+                                    <th>Numero</th>
+                                    <th>Detalhes</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="queue-history-body">
+                                <tr>
+                                    <td colspan="5" class="text-center text-muted-small">Aguardando processamento da fila...</td>
+                                </tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>

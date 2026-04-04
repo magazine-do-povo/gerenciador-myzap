@@ -1,8 +1,9 @@
 (async () => {
   try {
-    document.getElementById('idempresa').value = (await window.api.getStore('idempresa')) ?? '';
     document.getElementById('api').value = (await window.api.getStore('apiUrl')) ?? '';
-    document.getElementById('token').value = (await window.api.getStore('apiToken')) ?? '';
+    document.getElementById('login').value = (await window.api.getStore('apiLogin')) ?? '';
+    document.getElementById('password').value = (await window.api.getStore('apiPassword')) ?? '';
+    document.getElementById('idfilial').value = (await window.api.getStore('idfilial')) ?? (await window.api.getStore('idempresa')) ?? '';
   } catch (e) {
     alert('Erro ao carregar configuracoes: ' + (e?.message || e));
   }
@@ -13,24 +14,29 @@ const cfg = document.getElementById('cfg');
 cfg.onsubmit = (e) => {
   e.preventDefault();
 
-  const idempresa = document.getElementById('idempresa').value.trim();
   const apiUrl = document.getElementById('api').value.trim();
-  const apiToken = document.getElementById('token').value.trim();
+  const apiLogin = document.getElementById('login').value.trim();
+  const apiPassword = document.getElementById('password').value;
 
   if (!apiUrl.startsWith('http')) {
     alert('URL da API invalida');
     return;
   }
 
-  if (!/^\d+$/.test(idempresa)) {
-    alert('ID da empresa deve conter apenas numeros');
+  if (!apiLogin) {
+    alert('Informe o usuario do Hub');
+    return;
+  }
+
+  if (!apiPassword) {
+    alert('Informe a senha do Hub');
     return;
   }
 
   window.api.send('settings-saved', {
-    idempresa,
     apiUrl,
-    apiToken
+    apiLogin,
+    apiPassword
   });
 
   alert('Configuracoes salvas!');

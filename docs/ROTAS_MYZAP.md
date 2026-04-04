@@ -1,165 +1,157 @@
-﻿# API necessaria para integrar com o Gerenciador MyZap
+﻿# Contrato Atual Do Hub Para O Gerenciador MyZap
 
-Este documento define o contrato minimo da API da empresa para o `gerenciadorMyzap` funcionar (auto configuracao, polling de fila/status e sync de tokens).
+Documento atualizado a partir da implementacao real do Hub da Magazine do Povo:
 
-## 1. Regras gerais de integracao
+- routes: `api/src/routes.php`
+- login: `api/src/controllers/LoginController.php` e `api/src/handlers/LoginHandler.php`
+- myzap: `api/src/controllers/MyzapController.php` e `api/src/handlers/MyzapHandler.php`
+
+## 1. Regras gerais
 
 - Base principal: `apiUrl` salva nas configuracoes do app.
-- Autenticacao: `Authorization: Bearer {apiToken}`.
-- Todos os endpoints devem responder JSON.
-- Regra de sucesso no app:
-  - HTTP `2xx`
-  - campo `error` ausente, `null` ou vazio
-- Regra de falha no app:
-  - HTTP fora de `2xx`, ou
-  - resposta com `error` preenchido.
+- Autenticacao: `POST /login` com `login` e `senha`.
+- O retorno do login vem encapsulado em `result` e o Hub sempre responde JSON no formato:
 
-## 2. Endpoint de configuracao remota (obrigatorio)
+```json
+{
+  "result": {},
+  "error": false
+}
+```
 
-O app tenta as rotas abaixo, nessa ordem, ate encontrar credenciais validas:
+- O JWT expira em `3600` segundos e o payload contem `idfilial`.
+- O gerenciador deve tratar `idfilial` como identificador principal da integracao.
 
-1. `GET /parametrizacao-myzap/config/{idempresa}`
-2. `GET /parametrizacao-myzap/credenciais/{idempresa}`
-3. `GET /parametrizacao-myzap/configuracao/{idempresa}`
-4. `GET /parametrizacao-myzap/empresa/{idempresa}`
-5. `GET /parametrizacao-myzap/{idempresa}`
-6. `GET /parametrizacao-myzap/config?idempresa={idempresa}`
-7. `GET /parametrizacao-myzap/credenciais?idempresa={idempresa}`
-8. `GET /parametrizacao-myzap/configuracao?idempresa={idempresa}`
-9. `GET /parametrizacao-myzap?idempresa={idempresa}`
+## 2. Autenticacao
 
-Tempo limite por tentativa: `10s`.
+Endpoint real:
 
-### 2.1 Campos obrigatorios na resposta
+- `POST /login`
 
-A resposta precisa ter, em qualquer nivel do JSON, os dados logicos abaixo:
+Body esperado:
 
-- `sessionKey`
-- `myzapApiToken`
+```json
+{
+  "login": "usuario",
+  "senha": "senha"
+}
+```
 
-O app faz flatten recursivo do JSON, ignora maiusculas/minusculas e remove `_`, `-` e separadores.  
-Exemplo: `result.config.SESSION_KEY` e aceito.
-
-Aliases aceitos para `sessionKey`:
-
-- `sessionkey`
-- `session_key`
-- `myzap_session_key`
-- `myzapSessionKey`
-- `session_myzap`
-- `sessionmyzap`
-
-Aliases aceitos para `myzapApiToken`:
-
-- `apitoken`
-- `api_token`
-- `apiKey`
-- `api_key`
-- `myzap_api_token`
-- `myzapApiToken`
-- `sessiontoken`
-- `session_token`
-- `sessionToken`
-- `key_myzap`
-- `keymyzap`
-
-### 2.2 Campos opcionais suportados
-
-- `sessionName` (fallback: usa `sessionKey`)
-  - aliases: `sessionname`, `session_name`, `myzap_session_name`, `myzapSessionName`, `session_myzap`, `sessionmyzap`
-- Conteudo de `.env` do MyZap
-  - aliases: `envcontent`, `env_content`, `myzap_env`, `myzap_env_content`, `arquivo_env`, `env`
-- API/token para fila/status (se nao vier, usa `apiUrl`/`apiToken`)
-  - URL aliases: `clickexpressapiurl`, `clickexpress_api_url`, `click_api_url`, `apiurlclickexpress`
-  - Token aliases: `clickexpressqueuetoken`, `clickexpress_queue_token`, `clickqueuetoken`, `tokenfilaclickexpress`
-- IA/prompt
-  - prompt: `promptid`, `prompt_id`, `idprompt`, `myzap_prompt_id`, `myzappromptid`
-  - IA ativa: `iaativa`, `ia_ativa`, `myzap_ia_ativa`, `myzapiaativa`, `iaenabled`, `ia_enabled`
-- Modo de integracao (local/web)
-  - aliases de modo: `modoenvio`, `modo_envio`, `modointegracao`, `modo_integracao`, `modoexecucao`, `modo_execucao`, `modomyzap`, `modo_myzap`, `tipointegracao`, `tipo_integracao`, `tipomyzap`, `tipo_myzap`, `integrationmode`, `integration_mode`, `myzapmode`, `myzap_mode`
-  - aliases de modo id: `modoenvioid`, `modo_envio_id`, `modointegracaoid`, `modo_integracao_id`, `modomyzapid`, `modo_myzap_id`
-  - aliases boolean local: `rodarlocal`, `rodar_local`, `executarlocal`, `executar_local`, `filalocal`, `fila_local`, `myzaplocal`, `myzap_local`
-
-Normalizacao do modo no app:
-
-- `1` ou palavras tipo `web`, `online`, `cloud`, `nuvem` -> `web`
-- `2` ou palavras tipo `local`, `fila`, `desktop`, `onpremise` -> `local`
-- default: `local`
-
-### 2.3 Exemplo de resposta valida
+Resposta real do handler:
 
 ```json
 {
   "result": {
-    "session_key": "empresa_123",
-    "myzap_api_token": "tok_abc_123",
-    "session_name": "empresa_123",
-    "clickexpress_api_url": "https://api.suaempresa.com/",
-    "clickexpress_queue_token": "bearer_fila_123",
-    "modo_integracao": "local",
-    "ia_ativa": true,
-    "prompt_id": "42"
-  }
+    "token": "Bearer <jwt>",
+    "expires_in": 3600,
+    "ip": "172.18.0.1",
+    "usuario": {
+      "idusuario": 584,
+      "nome": null,
+      "login": "joaosn",
+      "idcnpj_cpf": null,
+      "cnpj_cpf": null,
+      "idgrupo": 1,
+      "idfilial": 10001
+    }
+  },
+  "error": false
 }
 ```
 
-## 3. Polling de status do MyZap
+Campos relevantes para o gerenciador:
 
-Endpoint:
+- `result.token`: header Authorization completo no formato `Bearer ...`.
+- `result.expires_in`: TTL em segundos.
+- `result.usuario.idfilial`: filial usada nas rotas do MyZap.
 
+## 3. Endpoints reais do modulo MyZap no Hub
+
+Rotas declaradas hoje:
+
+- `GET /myzap/config/{idfilial}`
+- `PUT /myzap/config/{idfilial}`
+- `GET /myzap/status/{idfilial}`
+- `GET /myzap/qrcode/{idfilial}`
+- `GET /myzap/logout/{idfilial}`
+- `POST /myzap/send-text`
+- `GET /myzap/fila/{idfilial}`
+- `GET /myzap/dashboard/{idfilial}`
+- `GET /myzap/pendentes`
+- `POST /myzap/fila/status`
+- `PUT /myzap/status`
+- `GET /parametrizacao-myzap/config/{idfilial}`
+- `GET /parametrizacao-myzap/configuracao/{idfilial}`
+- `GET /parametrizacao-myzap/pendentes`
+- `POST /parametrizacao-myzap/fila/status`
 - `PUT /parametrizacao-myzap/status`
 
-Frequencia:
+Observacao importante:
 
-- a cada `10s`.
+- Nao existe rota `POST /parametrizacao-myzap/tokens/sync` declarada em `routes.php`.
 
-Headers:
+## 4. Configuracao remota do MyZap
 
-- `Authorization: Bearer {clickexpress_queueToken}`
-- `Content-Type: application/json`
+Rotas reais que retornam configuracao:
 
-Body enviado pelo app:
+1. `GET /myzap/config/{idfilial}`
+2. `GET /parametrizacao-myzap/config/{idfilial}`
+3. `GET /parametrizacao-myzap/configuracao/{idfilial}`
 
-```json
-{
-  "sessionKey": "empresa_123",
-  "sessionName": "empresa_123",
-  "status_myzap": "ativo",
-  "data_ult_verificacao": "2026-02-23 12:30:10"
-}
-```
-
-Retorno minimo esperado:
+O handler `MyzapHandler::getConfig` devolve um objeto com estes campos:
 
 ```json
 {
-  "success": true
+  "result": {
+    "idfilial": 10001,
+    "idempresa": 10001,
+    "session_myzap": "sessao_filial",
+    "key_myzap": "token_local_myzap",
+    "modo_myzap": 2,
+    "modo_label": "Local",
+    "status_myzap": "pendente",
+    "data_ult_verificacao": null,
+    "created_at": null,
+    "updated_at": null,
+    "fila_total": 0,
+    "fila_pendente": 0,
+    "fila_erro": 0
+  },
+  "error": false
 }
 ```
 
-Observacao:
+Mapeamento usado pelo gerenciador:
 
-- se vier `error` no body, o app considera falha mesmo com HTTP `200`.
+- `session_myzap` -> `sessionKey`
+- `key_myzap` -> `myzapApiToken`
+- `modo_myzap` -> modo de integracao
+- `idfilial` -> identificador principal da filial
 
-## 4. Polling da fila de mensagens
+Normalizacao de modo no app:
 
-Endpoint:
+- `1` -> `web`
+- `2` -> `local`
 
-- `GET /parametrizacao-myzap/pendentes?sessionKey={sessionKey}&sessionToken={sessionName}`
+## 5. Polling da fila
 
-Frequencia:
+Endpoint real:
 
-- loop a cada `3s` (quando watcher de fila esta ativo).
+- `GET /parametrizacao-myzap/pendentes`
 
-Headers:
+Parametro realmente lido pelo controller:
 
-- `Authorization: Bearer {clickexpress_queueToken}`
+- `sessionKey`
 
-Importante:
+Implementacao do Hub:
 
-- hoje o app envia `sessionToken` com valor de `sessionName`.
+```php
+$sessionKey = (string) ($_GET['sessionKey'] ?? ($_GET['sessionkey'] ?? ''));
+```
 
-Retorno esperado:
+O controller nao usa `sessionToken` nem `idempresa` nessa busca.
+
+Resposta normalizada pelo handler:
 
 ```json
 {
@@ -168,109 +160,79 @@ Retorno esperado:
     "mensagens": [
       {
         "idfila": 987,
-        "idempresa": 123,
-        "status": "pendente",
-        "json": "{\"endpoint\":\"sendText\",\"data\":{\"number\":\"5511999999999\",\"text\":\"Ola\"}}",
-        "sessionkey": "empresa_123",
-        "apitoken": "tok_abc_123"
+        "idfilial": 10001,
+        "idempresa": 10001,
+        "sessionkey": "sessao_filial",
+        "apitoken": "token_local_myzap",
+        "json": "{\"endpoint\":\"sendText\",\"data\":{...}}",
+        "status": "pendente"
       }
     ]
-  }
+  },
+  "error": false
 }
 ```
 
-Campos relevantes por mensagem:
+## 6. Callback de status da fila
 
-- `idfila`: obrigatorio (usado no update de status).
-- `idempresa`: recomendado/esperado pelo app no callback de status.
-- `json`: obrigatorio, string JSON com:
-  - `endpoint` (ex: `sendText`)
-  - `data` (payload para MyZap local)
-- `status`: se `enviado`, mensagem e ignorada.
-- `sessionkey` e `apitoken`: opcionais (sobrescrevem credenciais padrao se enviados).
-
-## 5. Callback de status da fila
-
-Endpoint:
+Endpoint real:
 
 - `POST /parametrizacao-myzap/fila/status`
 
-Frequencia:
-
-- por mensagem processada na fila.
-
-Headers:
-
-- `Authorization: Bearer {clickexpress_queueToken}`
-- `Content-Type: application/json`
-
-Body enviado:
+Body realmente esperado pelo controller:
 
 ```json
 {
   "idfila": 987,
-  "idempresa": 123,
+  "idfilial": 10001,
   "status": "enviado"
 }
 ```
 
-`status` enviado pelo app:
+Compatibilidade legada ainda aceita:
 
-- `enviado`
-- `erro`
+- `idempresa` no lugar de `idfilial`
 
-Retorno minimo esperado:
+Implementacao real:
+
+```php
+$idfilial = (int) ($data['idempresa'] ?? ($data['idfilial'] ?? 0));
+```
+
+## 7. Atualizacao passiva de status
+
+Endpoint real:
+
+- `PUT /parametrizacao-myzap/status`
+
+Body aceito pelo handler:
 
 ```json
 {
-  "success": true
+  "sessionKey": "sessao_filial",
+  "sessionName": "sessao_filial",
+  "status_myzap": "ativo",
+  "data_ult_verificacao": "2026-04-03 14:30:00",
+  "idfilial": 10001
 }
 ```
 
-## 6. Sync de tokens de IA (opcional, mas recomendado)
+Compatibilidade legada ainda aceita:
 
-Esse endpoint so e usado quando:
+- `idempresa` no lugar de `idfilial`
 
-- IA esta ativa, e
-- modo de integracao esta `local`.
+## 8. Divergencias Encontradas Em Relacao Ao Legado
 
-Endpoint:
+- O legado usava token fixo salvo manualmente; o Hub atual exige `POST /login` com `login` e `senha`.
+- O legado buscava configuracao em varias rotas inexistentes hoje, incluindo variantes por query string com `idempresa`; o Hub atual declara apenas rotas por path com `idfilial`.
+- O legado tratava `idempresa` como identificador principal; o Hub atual trabalha por `idfilial`, mantendo `idempresa` apenas como alias de compatibilidade em alguns handlers.
+- O legado enviava `sessionToken` e `idempresa` no `GET /parametrizacao-myzap/pendentes`; o controller atual usa apenas `sessionKey`.
+- O legado inferia sync de tokens de IA como disponivel; a rota `POST /parametrizacao-myzap/tokens/sync` nao aparece nas rotas reais atuais.
 
-- `POST /parametrizacao-myzap/tokens/sync`
+## 9. Checklist rapido de compatibilidade
 
-Frequencia:
-
-- a cada `60s`, enviando apenas delta de tokens.
-
-Headers:
-
-- `Authorization: Bearer {clickexpress_queueToken}`
-- `Content-Type: application/json`
-
-Body enviado:
-
-```json
-{
-  "sessionKey": "empresa_123",
-  "idempresa": "123",
-  "tokens_total": 1200,
-  "tokens_delta": 150,
-  "data_sincronizacao": "2026-02-23T15:30:10.000Z"
-}
-```
-
-Retorno minimo esperado:
-
-```json
-{
-  "success": true
-}
-```
-
-## 7. Checklist rapido de compatibilidade da API
-
-- Existe pelo menos 1 rota de configuracao remota retornando `sessionKey` + `myzapApiToken`.
-- Rotas de status/fila aceitam Bearer token e retornam JSON sem `error`.
-- `GET /pendentes` retorna `result.mensagens` como array (mesmo vazio).
-- `POST /fila/status` aceita `enviado` e `erro`.
-- (Opcional) `POST /tokens/sync` disponivel para telemetria de IA.
+- `POST /login` precisa retornar `result.token`, `result.expires_in` e `result.usuario.idfilial`.
+- `GET /myzap/config/{idfilial}` ou um dos aliases de configuracao precisa retornar `session_myzap` e `key_myzap`.
+- `GET /parametrizacao-myzap/pendentes` deve aceitar `sessionKey` e devolver `result.mensagens`.
+- `POST /parametrizacao-myzap/fila/status` deve aceitar `idfila`, `idfilial` e `status`.
+- `PUT /parametrizacao-myzap/status` deve aceitar `sessionKey`, `status_myzap`, `data_ult_verificacao` e `idfilial`.

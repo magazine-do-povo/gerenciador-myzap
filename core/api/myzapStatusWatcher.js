@@ -3,9 +3,9 @@ const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const { info, warn, error } = require('../myzap/myzapLogger');
 const {
   isCapabilityEnabled,
-  getCapabilityEntry,
-  getBackendApiConfig
+  getCapabilityEntry
 } = require('../myzap/capabilities');
+const { ensureBackendSession } = require('../myzap/backendAuth');
 
 const store = new Store();
 const LOOP_INTERVAL_MS = 10000;
@@ -29,11 +29,6 @@ function isMyzapWatcherAtivo() {
   return ativo;
 }
 
-function normalizeBaseUrl(url) {
-  if (!url || typeof url !== 'string') return '';
-  return url.endsWith('/') ? url : `${url}/`;
-}
-
 function isPassiveStatusSupported() {
   return isCapabilityEnabled('supportsPassiveStatus', store);
 }
@@ -53,32 +48,29 @@ function isMyZapConnected(realStatusPayload) {
   return String(realStatusPayload?.realStatus || '').toUpperCase() === 'CONNECTED';
 }
 
-function getActiveConfig() {
-  const {
-    backendApiUrl,
-    backendApiToken
-  } = getBackendApiConfig(store);
+async function getActiveConfig() {
+  const backendSession = await ensureBackendSession({ storeLike: store });
   const sessionKey = String(store.get('myzap_sessionKey') || '').trim();
   const sessionName = String(store.get('myzap_sessionName') || sessionKey).trim();
-  const idempresa = String(store.get('idempresa') || '').trim();
+  const idfilial = String(backendSession?.idfilial || store.get('idfilial') || store.get('idempresa') || '').trim();
 
   return {
-    backendApiUrl: normalizeBaseUrl(backendApiUrl),
-    backendApiToken,
+    backendApiUrl: String(backendSession?.apiUrl || '').trim(),
+    backendAuthorization: String(backendSession?.authorization || '').trim(),
     sessionKey,
     sessionName,
-    idempresa
+    idfilial
   };
 }
 
 async function enviarStatusMyZap() {
   const {
     backendApiUrl,
-    backendApiToken,
+    backendAuthorization,
     sessionKey,
     sessionName,
-    idempresa
-  } = getActiveConfig();
+    idfilial
+  } = await getActiveConfig();
 
   ultimaExecucaoEm = new Date().toISOString();
 
@@ -92,9 +84,9 @@ async function enviarStatusMyZap() {
     return false;
   }
 
-  if (!backendApiUrl || !backendApiToken || !sessionKey || !sessionName) {
+  if (!backendApiUrl || !backendAuthorization || !sessionKey || !sessionName) {
     info('[StatusMyZap] Config incompleta, pulando envio de status', {
-      metadata: { area: 'myzapStatusWatcher', backendApiUrl: !!backendApiUrl, backendApiToken: !!backendApiToken, sessionKey: !!sessionKey, sessionName: !!sessionName }
+      metadata: { area: 'myzapStatusWatcher', backendApiUrl: !!backendApiUrl, backendAuthorization: !!backendAuthorization, sessionKey: !!sessionKey, sessionName: !!sessionName }
     });
     return false;
   }
@@ -122,8 +114,8 @@ async function enviarStatusMyZap() {
     data_ult_verificacao: formatDateTimeForApi()
   };
 
-  if (idempresa) {
-    body.idempresa = idempresa;
+  if (idfilial) {
+    body.idfilial = idfilial;
   }
 
   info('[StatusMyZap] Enviando PUT para API', {
@@ -134,7 +126,7 @@ async function enviarStatusMyZap() {
     method: 'PUT',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${backendApiToken}`
+      Authorization: backendAuthorization
     },
     body: JSON.stringify(body)
   });

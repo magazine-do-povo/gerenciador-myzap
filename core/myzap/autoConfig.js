@@ -15,6 +15,12 @@ const atualizarEnv = require('./atualizarEnv');
 const updateIaConfig = require('./api/updateIaConfig');
 const { transition, forceTransition, getState } = require('./stateMachine');
 const {
+    getBaseBackendConfig,
+    ensureBackendSession,
+    fetchBackendJson,
+    normalizeFilialId
+} = require('./backendAuth');
+const {
     parseBooleanLike,
     buildBackendProfileKey,
     clearDerivedBackendState,
@@ -260,10 +266,46 @@ function buildDefaultEnv({ sessionKey, myzapApiToken }) {
         `SESSION_KEY=${sessionKey}`,
         `SESSIONKEY=${sessionKey}`,
         '',
+        `TOKEN=${myzapApiToken}`,
         `API_TOKEN=${myzapApiToken}`,
         `APITOKEN=${myzapApiToken}`,
         ''
     ].join('\n');
+}
+
+function escapeRegExp(value) {
+    return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function upsertEnvLine(content, key, value) {
+    const serializedLine = `${key}="${String(value || '').trim()}"`;
+    const regex = new RegExp(`^${escapeRegExp(key)}=.*$`, 'm');
+
+    if (!content || !String(content).trim()) {
+        return `${serializedLine}\n`;
+    }
+
+    if (regex.test(content)) {
+        return content.replace(regex, serializedLine);
+    }
+
+    return `${String(content).trimEnd()}\n${serializedLine}\n`;
+}
+
+function materializeEnvContent({ baseEnv, sessionKey, sessionName, myzapApiToken }) {
+    let content = String(baseEnv || '').trim();
+    if (!content) {
+        return buildDefaultEnv({ sessionKey, myzapApiToken });
+    }
+
+    content = upsertEnvLine(content, 'SESSION_NAME', sessionName || sessionKey);
+    content = upsertEnvLine(content, 'SESSION_KEY', sessionKey);
+    content = upsertEnvLine(content, 'SESSIONKEY', sessionKey);
+    content = upsertEnvLine(content, 'TOKEN', myzapApiToken);
+    content = upsertEnvLine(content, 'API_TOKEN', myzapApiToken);
+    content = upsertEnvLine(content, 'APITOKEN', myzapApiToken);
+
+    return content.trim();
 }
 
 function getBundledEnvContent() {
@@ -273,107 +315,52 @@ function getBundledEnvContent() {
             return fs.readFileSync(envPath, 'utf8');
         }
     } catch (_e) {
-        // fallback para default dinÃ¢mico
+        // fallback para default dinamico
     }
     return '';
 }
 
-async function requestJson(url, token) {
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), 10000);
+async function requestJson(resourcePath) {
     const startedAt = Date.now();
-
-    try {
-        debug('MyZap config: iniciando requisicao HTTP', {
-            metadata: {
-                area: 'autoConfig',
-                url
-            }
-        });
-
-        const res = await fetch(url, {
-            method: 'GET',
-            headers: {
-                Authorization: `Bearer ${token}`,
-                'Content-Type': 'application/json'
-            },
-            signal: ctrl.signal
-        });
-
-        const contentType = String(res.headers.get('content-type') || '').trim();
-        const rawBody = await res.text().catch(() => '');
-        let body = {};
-        let parseError = null;
-
-        if (rawBody && rawBody.trim()) {
-            try {
-                body = JSON.parse(rawBody);
-            } catch (err) {
-                parseError = err?.message || String(err);
-            }
+    const response = await fetchBackendJson(resourcePath, {
+        method: 'GET',
+        headers: {
+            'Content-Type': 'application/json'
         }
+    }, {
+        storeLike: store,
+        timeoutMs: 10000
+    });
 
-        debug('MyZap config: resposta HTTP recebida', {
-            metadata: {
-                area: 'autoConfig',
-                url,
-                status: res.status,
-                ok: res.ok,
-                contentType,
-                parseError,
-                elapsedMs: Date.now() - startedAt
-            }
-        });
-        return {
-            ok: res.ok,
-            status: res.status,
-            body,
-            rawBody,
-            contentType,
-            parseError
-        };
-    } catch (error) {
-        warn('MyZap config: falha de requisicao HTTP', {
-            metadata: {
-                area: 'autoConfig',
-                url,
-                error,
-                elapsedMs: Date.now() - startedAt
-            }
-        });
-        return {
-            ok: false,
-            status: 0,
-            body: {},
-            rawBody: '',
-            contentType: '',
-            parseError: null,
-            error: error?.message || String(error)
-        };
-    } finally {
-        clearTimeout(timeout);
-    }
+    debug('MyZap config: resposta HTTP recebida', {
+        metadata: {
+            area: 'autoConfig',
+            url: response.url,
+            status: response.status,
+            ok: response.ok,
+            contentType: response.contentType,
+            parseError: response.parseError,
+            elapsedMs: Date.now() - startedAt,
+            authRefreshed: response.authRefreshed === true
+        }
+    });
+
+    return response;
 }
 
-async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa }) {
+async function fetchRemoteMyZapCredentials({ apiBaseUrl, idfilial }) {
     info('MyZap config: buscando credenciais remotas', {
         metadata: {
             area: 'autoConfig',
-            idempresa,
+            idfilial,
             apiBaseUrl
         }
     });
 
     const endpoints = [
-        `parametrizacao-myzap/config/${idempresa}`,
-        `parametrizacao-myzap/credenciais/${idempresa}`,
-        `parametrizacao-myzap/configuracao/${idempresa}`,
-        `parametrizacao-myzap/empresa/${idempresa}`,
-        `parametrizacao-myzap/${idempresa}`,
-        `parametrizacao-myzap/config?idempresa=${encodeURIComponent(idempresa)}`,
-        `parametrizacao-myzap/credenciais?idempresa=${encodeURIComponent(idempresa)}`,
-        `parametrizacao-myzap/configuracao?idempresa=${encodeURIComponent(idempresa)}`,
-        `parametrizacao-myzap?idempresa=${encodeURIComponent(idempresa)}`
+        `myzap/config/${idfilial}`,
+        `parametrizacao-myzap/config/${idfilial}`,
+        `parametrizacao-myzap/configuracao/${idfilial}`
     ];
 
     const sessionKeyCandidates = [
@@ -501,7 +488,7 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
     const attempts = [];
     const debugRun = {
         generatedAt: Date.now(),
-        idempresa,
+        idfilial,
         apiBaseUrl,
         success: false,
         reason: 'credentials_not_found',
@@ -512,7 +499,7 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
 
     for (const endpoint of endpoints) {
         const url = `${apiBaseUrl}${endpoint}`;
-        const response = await requestJson(url, bearerToken);
+        const response = await requestJson(endpoint);
         const responseBodyForDebug = (
             response?.body
             && typeof response.body === 'object'
@@ -538,7 +525,7 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
         debug('MyZap config: tentativa de endpoint', {
             metadata: {
                 area: 'autoConfig',
-                idempresa,
+                idfilial,
                 endpoint,
                 status: response.status,
                 ok: response.ok,
@@ -591,7 +578,7 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
             info('MyZap config: credenciais remotas obtidas com sucesso', {
                 metadata: {
                     area: 'autoConfig',
-                    idempresa,
+                    idfilial,
                     endpoint,
                     hasPromptId: !!promptId,
                     hasIaAtiva: iaAtiva !== '',
@@ -611,7 +598,7 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
     warn('MyZap config: nenhum endpoint retornou credenciais validas', {
         metadata: {
             area: 'autoConfig',
-            idempresa,
+            idfilial,
             attempts
         }
     });
@@ -622,53 +609,52 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, bearerToken, idempresa 
     };
 }
 
-function getBaseCompanyConfig() {
-    const apiUrl = normalizeBaseUrl(String(store.get('apiUrl') || '').trim());
-    const apiToken = String(store.get('apiToken') || '').trim();
-    const idempresa = String(store.get('idempresa') || '').trim();
-
-    return {
-        apiUrl,
-        apiToken,
-        idempresa
-    };
-}
-
 async function prepareAutoConfig(options = {}) {
     const forceRemote = Boolean(options.forceRemote);
-    const base = getBaseCompanyConfig();
+    const base = getBaseBackendConfig(store);
 
-    if (!base.apiUrl || !base.apiToken || !base.idempresa) {
+    if (!base.apiUrl || !base.login || !base.password) {
         setLastRemoteConfigDebug({
             generatedAt: Date.now(),
             success: false,
             reason: 'missing_base_config',
             baseConfig: {
                 hasApiUrl: !!base.apiUrl,
-                hasApiToken: !!base.apiToken,
-                hasIdempresa: !!base.idempresa
+                hasLogin: !!base.login,
+                hasPassword: !!base.password
             },
             attempts: []
         });
         return {
             status: 'error',
-            message: 'Configure ID da empresa, URL da API e token nas configuracoes principais antes de iniciar o MyZap.'
+            message: 'Configure URL da API, usuario e senha nas configuracoes principais antes de iniciar o MyZap.'
         };
     }
 
-    const backendProfileKey = buildBackendProfileKey(base);
-    const storedBackendProfileKey = String(store.get('myzap_backendProfileKey') || '').trim();
-    if (backendProfileKey && storedBackendProfileKey && storedBackendProfileKey !== backendProfileKey) {
-        info('MyZap config: backend principal alterado, invalidando cache remoto derivado', {
-            metadata: {
-                area: 'autoConfig',
-                previousBackendProfileKey: storedBackendProfileKey,
-                nextBackendProfileKey: backendProfileKey
-            }
+    const authSession = await ensureBackendSession({ storeLike: store });
+    const idfilial = normalizeFilialId(authSession?.idfilial || base.idfilial);
+    if (!idfilial) {
+        setLastRemoteConfigDebug({
+            generatedAt: Date.now(),
+            success: false,
+            reason: 'missing_idfilial_after_login',
+            baseConfig: {
+                apiUrl: base.apiUrl,
+                login: base.login
+            },
+            attempts: []
         });
-        clearDerivedBackendState(store);
-        store.set('myzap_backendProfileKey', backendProfileKey);
+        return {
+            status: 'error',
+            message: 'O login no Hub nao retornou um idfilial valido para essa conta.'
+        };
     }
+
+    const backendProfileKey = buildBackendProfileKey({
+        apiUrl: base.apiUrl,
+        login: base.login,
+        idfilial
+    });
 
     const myzapDirectoryResolution = resolveMyZapDirectory();
     const myzapDiretorio = myzapDirectoryResolution.dir;
@@ -691,8 +677,7 @@ async function prepareAutoConfig(options = {}) {
     const remote = shouldFetchRemote
         ? await fetchRemoteMyZapCredentials({
             apiBaseUrl: base.apiUrl,
-            bearerToken: base.apiToken,
-            idempresa: base.idempresa
+            idfilial
         })
         : { ok: false, attempts: [] };
     const remoteFetched = Boolean(remote?.ok);
@@ -704,7 +689,7 @@ async function prepareAutoConfig(options = {}) {
         warn('MyZap config: nao foi possivel atualizar dados remotos, aplicando fallback de cache local', {
             metadata: {
                 area: 'autoConfig',
-                idempresa: base.idempresa,
+                idfilial,
                 forceRemote,
                 remoteIsStale,
                 attempts: remote?.attempts || []
@@ -719,16 +704,11 @@ async function prepareAutoConfig(options = {}) {
         sanitizeBackendApiUrl(remote?.data?.backendApiUrl, base.apiUrl)
         || store.get('myzap_backendApiUrl')
         || store.get('clickexpress_apiUrl')
+        || authSession?.apiUrl
         || base.apiUrl
         || ''
     ).trim());
-    const backendApiToken = String(
-        remote?.data?.backendApiToken
-        || store.get('myzap_backendApiToken')
-        || store.get('clickexpress_queueToken')
-        || base.apiToken
-        || ''
-    ).trim();
+    const backendApiToken = String(authSession?.authorization || '').trim();
     const remotePromptId = remoteFetched ? String(remote?.data?.promptId || '').trim() : '';
     const capabilityPromptId = remoteFetched ? remotePromptId : currentPromptId;
     const rawPromptId = remoteFetched ? remotePromptId : (remote?.data?.promptId || currentPromptId || '');
@@ -747,16 +727,20 @@ async function prepareAutoConfig(options = {}) {
         || currentModoIntegracao
         || 'local';
     const rodarLocal = modoIntegracao === 'local';
-    const envContent = (
+    const envContentBase = (
         remote?.data?.envContent
         || currentEnvContent
         || getBundledEnvContent()
-        || (sessionKey && myzapApiToken ? buildDefaultEnv({ sessionKey, myzapApiToken }) : '')
+        || ''
     ).trim();
 
-    // Sincronizar myzap_apiToken com o TOKEN real do .env
-    // O TOKEN no .env e o que o MyZap local valida nas chamadas HTTP.
-    // A API remota pode devolver myzapApiToken = sessionKey (errado).
+    const envContent = materializeEnvContent({
+        baseEnv: envContentBase,
+        sessionKey,
+        sessionName,
+        myzapApiToken
+    });
+
     const envTokenMatch = envContent.match(/^TOKEN="?([^"\n\r]+)"?/m);
     if (envTokenMatch && envTokenMatch[1].trim()) {
         const envToken = envTokenMatch[1].trim();
@@ -784,7 +768,7 @@ async function prepareAutoConfig(options = {}) {
     if (!sessionKey || !myzapApiToken) {
         warn('Nao foi possivel obter credenciais automaticas do MyZap', {
             metadata: {
-                idempresa: base.idempresa,
+                idfilial,
                 remoteAttempts: remote?.attempts || []
             }
         });
@@ -802,6 +786,8 @@ async function prepareAutoConfig(options = {}) {
     }
 
     const payload = {
+        idfilial,
+        idempresa: idfilial,
         myzap_diretorio: myzapDiretorio,
         myzap_sessionKey: sessionKey,
         myzap_sessionName: sessionName || sessionKey,
@@ -827,7 +813,7 @@ async function prepareAutoConfig(options = {}) {
 
     info('Configuracao automatica do MyZap preparada com sucesso', {
         metadata: {
-            idempresa: base.idempresa,
+            idfilial,
             myzap_diretorio: myzapDiretorio,
             myzap_diretorio_source: myzapDirectoryResolution.source,
             remoteFetched: Boolean(remote?.ok),

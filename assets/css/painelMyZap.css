@@ -126,6 +126,18 @@ body {
     background-color: #1e293b;
 }
 
+.btn-outline-success {
+    border-color: rgba(16, 185, 129, 0.45);
+    color: #86efac;
+}
+
+.btn-outline-success:hover,
+.btn-outline-success:focus {
+    background-color: rgba(16, 185, 129, 0.12);
+    color: #d1fae5;
+    border-color: rgba(16, 185, 129, 0.7);
+}
+
 /* =====================================================
    STATUS BADGE
 ===================================================== */
@@ -201,6 +213,12 @@ body {
     padding: 18px;
 }
 
+.myzap-status-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
 .status-indicator {
     padding: 10px 12px;
     border-radius: 10px;
@@ -222,6 +240,32 @@ body {
 .status-indicator.disconnected {
     background: linear-gradient(135deg, #ef4444, #dc2626);
     color: #fef2f2;
+}
+
+.myzap-test-feedback {
+    border-radius: 10px;
+    border: 1px solid transparent;
+    padding: 10px 12px;
+    font-size: 0.82rem;
+    line-height: 1.4;
+}
+
+.myzap-test-feedback.info {
+    background-color: rgba(14, 165, 233, 0.12);
+    border-color: rgba(14, 165, 233, 0.28);
+    color: #bae6fd;
+}
+
+.myzap-test-feedback.success {
+    background-color: rgba(16, 185, 129, 0.12);
+    border-color: rgba(16, 185, 129, 0.3);
+    color: #d1fae5;
+}
+
+.myzap-test-feedback.error {
+    background-color: rgba(239, 68, 68, 0.12);
+    border-color: rgba(239, 68, 68, 0.32);
+    color: #fecaca;
 }
 
 /* =====================================================
@@ -317,5 +361,10 @@ body {
 @media (max-width: 992px) {
     .myzap-grid {
         grid-template-columns: 1fr;
+    }
+
+    .myzap-status-actions {
+        width: 100%;
+        justify-content: flex-end;
     }
 }

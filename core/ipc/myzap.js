@@ -9,6 +9,7 @@ const getConnectionStatus = require('../myzap/api/getConnectionStatus');
 const startSession = require('../myzap/api/startSession');
 const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
+const sendTestMessage = require('../myzap/api/sendTestMessage');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { iniciarMyZap } = require('../myzap/iniciarMyZap');
 const {
@@ -20,6 +21,7 @@ const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
 const { getStateSnapshot } = require('../myzap/stateMachine');
 const { getPrivilegeStatus } = require('../myzap/processUtils');
 const {
+    getUltimosEnviosMyZap,
     getUltimosPendentesMyZap,
     startWhatsappQueueWatcher,
     stopWhatsappQueueWatcher,
@@ -238,6 +240,21 @@ function registerMyZapHandlers(ipcMain) {
         }
     });
 
+    ipcMain.handle('myzap:sendTestMessage', async () => {
+        try {
+            const result = await sendTestMessage();
+            return result;
+        } catch (error) {
+            warn('Falha ao enviar mensagem de teste MyZap via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                message: error.message || String(error)
+            };
+        }
+    });
+
     ipcMain.handle('myzap:updateIaConfig', async (event, mensagemPadrao) => {
         try {
             const result = await updateIaConfig(mensagemPadrao);
@@ -309,6 +326,17 @@ function registerMyZapHandlers(ipcMain) {
             return getUltimosPendentesMyZap();
         } catch (error) {
             warn('Falha ao obter pendentes da fila MyZap via IPC', {
+                metadata: { error }
+            });
+            return [];
+        }
+    });
+
+    ipcMain.handle('myzap:getQueueRecentMessages', async () => {
+        try {
+            return getUltimosEnviosMyZap();
+        } catch (error) {
+            warn('Falha ao obter historico recente da fila MyZap via IPC', {
                 metadata: { error }
             });
             return [];

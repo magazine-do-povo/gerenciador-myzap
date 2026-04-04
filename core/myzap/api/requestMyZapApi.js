@@ -94,14 +94,20 @@ async function requestMyZapApi(endpoint, options = {}) {
 
     const endpointPath = String(endpoint || '').replace(/^\/+/, '');
     const baseUrls = getMyZapApiBaseUrls();
+    const defaultPayload = {
+        session: sessionName,
+        sessionkey: sessionKey,
+        session_name: sessionName
+    };
 
     const payload = (body === undefined)
-        ? {
-            session: sessionName,
-            sessionkey: sessionKey,
-            session_name: sessionName
-        }
-        : body;
+        ? defaultPayload
+        : ((body && typeof body === 'object' && !Array.isArray(body))
+            ? {
+                ...defaultPayload,
+                ...body
+            }
+            : body);
 
     let lastError = null;
 

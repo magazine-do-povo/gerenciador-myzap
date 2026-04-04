@@ -1,9 +1,33 @@
-function setButtonsState({ canStart, canDelete }) {
+function setButtonsState({ canStart, canDelete, canSendTest = false }) {
   const btnStart = document.getElementById('btn-start-session');
   const btnDelete = document.getElementById('btn-delete-session');
+  const btnSendTest = document.getElementById('btn-send-test-message');
 
   if (btnStart) btnStart.disabled = !canStart;
   if (btnDelete) btnDelete.disabled = !canDelete;
+  if (btnSendTest) btnSendTest.disabled = !canSendTest;
+}
+
+function setTestMessageFeedback(type, message) {
+  const box = document.getElementById('myzap-test-feedback');
+  if (!box) return;
+
+  box.classList.remove('d-none', 'info', 'success', 'error');
+
+  if (!message) {
+    box.textContent = '';
+    box.classList.add('d-none');
+    return;
+  }
+
+  const normalizedType = type === 'success' || type === 'error' ? type : 'info';
+  box.textContent = String(message);
+  box.classList.add(normalizedType);
+}
+
+function canSendTestMessage() {
+  const statusIndicator = document.querySelector('.status-indicator');
+  return Boolean(statusIndicator?.classList.contains('connected'));
 }
 
 function setIaConfigVisibility(isVisible) {
@@ -615,7 +639,7 @@ async function refreshConfigFromApiAndRender() {
   await refreshCapabilityState();
   await atualizarDebugConfigPainel(autoConfig);
   if (autoConfig?.status === 'error') {
-    setOnlineOnlyView(true, `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique API/Token/Empresa e tente novamente.`);
+    setOnlineOnlyView(true, `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique URL, usuario e senha nas Configuracoes e tente novamente.`);
     await refreshMyZapProgress();
     return;
   }
@@ -632,7 +656,7 @@ async function refreshConfigFromApiAndRender() {
     remoteConfigOk: myzap_remoteConfigOk
   });
   if (!myzap_remoteConfigOk) {
-    setOnlineOnlyView(true, `Nao foi possivel validar a configuracao do MyZap na API neste momento. O painel local foi bloqueado para evitar decisao por cache. Verifique API/Token/Empresa e tente novamente.`);
+    setOnlineOnlyView(true, `Nao foi possivel validar a configuracao do MyZap na API neste momento. O painel local foi bloqueado para evitar decisao por cache. Verifique URL, usuario e senha nas Configuracoes e tente novamente.`);
   } else {
     setOnlineOnlyView(!modoLocal);
   }
@@ -739,7 +763,7 @@ async function loadConfigs() {
   try {
     const configIntro = document.querySelector('#config > p.text-muted.mb-3');
     if (configIntro) {
-      configIntro.innerHTML = 'Preencha o <strong>TOKEN</strong> antes de instalar o MyZap. As demais configuracoes (Session Key, diretorio, modo e features opcionais) sao sincronizadas automaticamente da API do backend da empresa.';
+      configIntro.innerHTML = 'O <strong>TOKEN local do MyZap</strong> e sincronizado automaticamente do Hub quando disponivel. Se a filial nao devolver essa chave, voce pode ajusta-la abaixo antes de instalar.';
     }
     const autoConfig = await window.api.prepareMyZapAutoConfig(true);
     await refreshPrivilegeStatus();
@@ -774,7 +798,7 @@ async function loadConfigs() {
     setOnlineOnlyView(
       !remoteConfigOk || !myzap_remoteConfigOk || !modoLocal,
       !remoteConfigOk
-        ? `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique API/Token/Empresa e tente novamente.`
+        ? `Nao foi possivel consultar a rota de configuracao do MyZap agora: ${autoConfig?.message || 'erro desconhecido'}. Verifique URL, usuario e senha nas Configuracoes e tente novamente.`
         : (!myzap_remoteConfigOk
           ? 'Nao foi possivel validar a configuracao do MyZap na API neste momento. O painel local foi bloqueado para evitar decisao por cache.'
           : '')
@@ -923,7 +947,7 @@ async function checkRealConnection() {
         </span>
       `;
 
-      setButtonsState({ canStart: true, canDelete: false });
+      setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
       setIaConfigVisibility(false);
       return { isConnected: false, isQrWaiting: false, response };
     }
@@ -941,7 +965,7 @@ async function checkRealConnection() {
         </span>
       `;
 
-      setButtonsState({ canStart: false, canDelete: true });
+      setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
       setIaConfigVisibility(true);
       return { isConnected: true, isQrWaiting: false, response };
     }
@@ -950,7 +974,7 @@ async function checkRealConnection() {
       statusIndicator.className = 'status-indicator waiting';
       statusIndicator.textContent = 'â³ Aguardando leitura do QR Code';
 
-      setButtonsState({ canStart: false, canDelete: true });
+      setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
       setIaConfigVisibility(false);
       return { isConnected: false, isQrWaiting: true, response };
     }
@@ -964,7 +988,7 @@ async function checkRealConnection() {
       </span>
     `;
 
-    setButtonsState({ canStart: true, canDelete: false });
+    setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
     setIaConfigVisibility(false);
     return { isConnected: false, isQrWaiting: false, response };
 
@@ -980,7 +1004,7 @@ async function checkRealConnection() {
       </span>
     `;
 
-    setButtonsState({ canStart: false, canDelete: false });
+    setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
     setIaConfigVisibility(false);
     return { isConnected: false, isQrWaiting: false, response: null };
   }
@@ -1001,7 +1025,7 @@ async function checkConnection() {
     statusIndicator.className = 'status-indicator waiting';
     statusIndicator.textContent = 'Modo local inativo ou nao validado';
     qrBox.innerHTML = `<span class="text-muted-small">QR Code local indisponivel. Verifique o modo no backend da empresa e a validacao da rota de configuracao.</span>`;
-    setButtonsState({ canStart: false, canDelete: false });
+    setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
     setIaConfigVisibility(false);
     return;
   }
@@ -1033,8 +1057,8 @@ async function checkConnection() {
       statusIndicator.textContent = 'â³ Aguardando leitura do QR Code';
 
       qrBox.innerHTML = `
-        <img 
-          src="${qrCode}" 
+        <img
+          src="${qrCode}"
           alt="QR Code WhatsApp"
         />
         <div class="qrcode-hint">
@@ -1136,7 +1160,7 @@ async function tickQrPolling() {
       statusIndicator.className = 'status-indicator connected';
       statusIndicator.textContent = 'Conectado';
       qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
-      setButtonsState({ canStart: false, canDelete: true });
+      setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
       setIaConfigVisibility(true);
       console.log('[MyZap UI] Sessao conectada! Polling de QR encerrado.');
       return;
@@ -1151,7 +1175,7 @@ async function tickQrPolling() {
         statusIndicator.textContent = 'Aguardando leitura do QR Code';
         qrBox.innerHTML = '<img src="' + newQr + '" alt="QR Code WhatsApp"/>' +
           '<div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>';
-        setButtonsState({ canStart: false, canDelete: true });
+        setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
       }
     }
   } catch (err) {
@@ -1180,7 +1204,7 @@ function startQrPolling() {
             statusIndicator.textContent = '✅ Conectado';
           }
           if (qrBox) qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
-          setButtonsState({ canStart: false, canDelete: true });
+          setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
           setIaConfigVisibility(true);
           return;
         }
@@ -1194,7 +1218,7 @@ function startQrPolling() {
       if (qrBox) {
         qrBox.innerHTML = '<span class="text-muted-small">QR Code expirou. Clique em Iniciar instancia para gerar um novo.</span>';
       }
-      setButtonsState({ canStart: true, canDelete: true });
+      setButtonsState({ canStart: true, canDelete: true, canSendTest: false });
       return;
     }
     await tickQrPolling();
@@ -1218,7 +1242,7 @@ async function iniciarSessao() {
       statusIndicator.className = 'status-indicator waiting';
       statusIndicator.textContent = '⚠️ Sessão já existe';
 
-      setButtonsState({ canStart: false, canDelete: true });
+      setButtonsState({ canStart: false, canDelete: true, canSendTest: Boolean(realCheck?.isConnected) });
       return;
     }
 
@@ -1238,7 +1262,7 @@ async function iniciarSessao() {
       throw new Error('Sem resposta do MyZap. Verifique se o servico esta rodando (porta 5555).');
     }
 
-    setButtonsState({ canStart: false, canDelete: true });
+    setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
 
     // Se o start ja retornou QR code (waitQrCode: true), exibir imediatamente
     const qrFromStart = response.qrCode || response.qr_code || response.qrcode || response.base64Qrimg || response.urlCode || '';
@@ -1291,7 +1315,7 @@ async function deletarSessao() {
       statusIndicator.className = 'status-indicator disconnected';
       statusIndicator.textContent = 'Nenhuma sessao ativa';
 
-      setButtonsState({ canStart: true, canDelete: false });
+      setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
       return;
     }
 
@@ -1322,7 +1346,7 @@ async function deletarSessao() {
       </span>
     `;
 
-    setButtonsState({ canStart: true, canDelete: false });
+    setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
 
   } catch (err) {
     console.error('Erro ao deletar sessao:', err);
@@ -1335,6 +1359,41 @@ async function deletarSessao() {
         Nao foi possivel encerrar a sessao
       </span>
     `;
+  }
+}
+
+async function enviarMensagemTeste() {
+  const btnSendTest = document.getElementById('btn-send-test-message');
+  if (!btnSendTest) return;
+
+  if (!(await isModoLocalAtivo())) {
+    setTestMessageFeedback('error', 'Modo local inativo ou nao validado pela API.');
+    btnSendTest.disabled = true;
+    return;
+  }
+
+  const oldText = btnSendTest.textContent;
+  btnSendTest.disabled = true;
+  btnSendTest.textContent = 'Enviando...';
+  setTestMessageFeedback('info', 'Enviando mensagem de teste para o proprio numero...');
+
+  try {
+    const response = await window.api.sendTestMessage();
+
+    if (!response || response.status !== 'success') {
+      throw new Error(response?.message || 'Falha ao enviar mensagem de teste.');
+    }
+
+    setTestMessageFeedback(
+      'success',
+      `Teste enviado para ${response.number} em ${response.sentAtLabel}.`
+    );
+  } catch (err) {
+    console.error('Erro ao enviar mensagem de teste:', err);
+    setTestMessageFeedback('error', err?.message || String(err));
+  } finally {
+    btnSendTest.textContent = oldText;
+    btnSendTest.disabled = !canSendTestMessage();
   }
 }
 

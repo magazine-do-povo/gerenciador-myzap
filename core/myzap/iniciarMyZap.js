@@ -14,6 +14,41 @@ function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
 }
 
+function resolveDirectMyZapStartRunner(dirPath) {
+  try {
+    const packageJsonPath = path.join(dirPath, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) {
+      return null;
+    }
+
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+    const startScript = String(packageJson?.scripts?.start || '').trim();
+    const directNodeMatch = startScript.match(/^node(?:\.exe)?\s+"?([^"\s]+\.js)"?$/i);
+
+    if (!directNodeMatch) {
+      return null;
+    }
+
+    const entryFile = path.resolve(dirPath, directNodeMatch[1]);
+    if (!fs.existsSync(entryFile)) {
+      return null;
+    }
+
+    return {
+      command: process.execPath,
+      prefixArgs: [entryFile],
+      shell: false,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+      source: 'direct-node-start',
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
 /** Referencia ao child process ativo do MyZap (pnpm start) */
 let myzapChildProcess = null;
 
@@ -176,8 +211,8 @@ async function iniciarMyZap(dirPath, options = {}) {
       });
     }
 
-    const pnpmRunner = await getPnpmCommand();
-    if (!pnpmRunner) {
+    const startRunner = resolveDirectMyZapStartRunner(dirPath) || await getPnpmCommand();
+    if (!startRunner) {
       return {
         status: 'error',
         message: 'Nao foi possivel carregar o executor interno de inicializacao do MyZap.',
@@ -188,10 +223,13 @@ async function iniciarMyZap(dirPath, options = {}) {
       percent: 93,
       dirPath,
     });
-    const child = spawn(pnpmRunner.command, [...pnpmRunner.prefixArgs, 'start'], {
+    const childArgs = startRunner.source === 'direct-node-start'
+      ? [...startRunner.prefixArgs]
+      : [...startRunner.prefixArgs, 'start'];
+    const child = spawn(startRunner.command, childArgs, {
       cwd: dirPath,
-      shell: pnpmRunner.shell,
-      env: pnpmRunner.env,
+      shell: startRunner.shell,
+      env: startRunner.env,
       detached: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -271,7 +309,7 @@ async function iniciarMyZap(dirPath, options = {}) {
     transition('running', { message: 'MyZap iniciado e porta confirmada.', dirPath, porta });
 
     info('MyZap iniciado e porta confirmada', {
-      metadata: { porta, dirPath, runner: pnpmRunner.source || pnpmRunner.command },
+      metadata: { porta, dirPath, runner: startRunner.source || startRunner.command },
     });
     reportProgress('MyZap iniciado e porta confirmada.', 'ready', {
       percent: 98,

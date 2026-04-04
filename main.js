@@ -63,8 +63,11 @@ const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 const store = new Store({
   defaults: {
+    idfilial: '',
     idempresa: '',
     apiUrl: '',
+    apiLogin: '',
+    apiPassword: '',
     apiToken: '',
     myzap_diretorio: '',
     myzap_sessionKey: '',
@@ -117,7 +120,7 @@ function notifyAdminRequired(result, context = 'runtime') {
 }
 
 function hasValidConfigMyZap() {
-  return !!store.get('apiUrl') && !!store.get('apiToken') && !!store.get('idempresa');
+  return !!store.get('apiUrl') && !!store.get('apiLogin') && !!store.get('apiPassword');
 }
 
 function getModoIntegracaoMyZap() {
@@ -451,7 +454,7 @@ async function updateMyZapNow() {
   }
 
   if (!hasValidConfigMyZap()) {
-    toast('Configure API/Token/Empresa antes de atualizar o MyZap');
+    toast('Configure URL da API, usuario e senha antes de atualizar o MyZap');
     createSettings();
     return;
   }
@@ -498,7 +501,7 @@ async function updateMyZapNow() {
 
 async function autoStartMyZap() {
   if (!hasValidConfigMyZap()) {
-    myzapWarn('MyZap: configuracoes base ausentes (apiUrl/apiToken/idempresa).');
+    myzapWarn('MyZap: configuracoes base ausentes (apiUrl/apiLogin/apiPassword).');
     toast('Configure a API do MyZap pelo icone na bandeja');
     createSettings();
     return;
@@ -703,8 +706,8 @@ if (!hasSingleInstanceLock) {
       warn('Configuracao da API ausente no startup', {
         metadata: {
           apiUrl: !!store.get('apiUrl'),
-          apiToken: !!store.get('apiToken'),
-          idempresa: !!store.get('idempresa')
+          apiLogin: !!store.get('apiLogin'),
+          apiPassword: !!store.get('apiPassword')
         }
       });
       toast('Configure a API do MyZap antes de iniciar');
@@ -752,18 +755,25 @@ if (!hasSingleInstanceLock) {
   });
   registerMyZapHandlers(ipcMain);
 
-  ipcMain.on('settings-saved', async (_e, { idempresa, apiUrl, apiToken }) => {
+  ipcMain.on('settings-saved', async (_e, { apiUrl, apiLogin, apiPassword }) => {
     info('Configuracoes da API salvas pelo usuario', {
-      metadata: { idempresa, apiUrl }
+      metadata: { apiUrl, apiLogin }
     });
+
+    const baseConfigChanged = (
+      String(store.get('apiUrl') || '').trim() !== String(apiUrl || '').trim()
+      || String(store.get('apiLogin') || '').trim() !== String(apiLogin || '').trim()
+      || String(store.get('apiPassword') || '') !== String(apiPassword || '')
+    );
 
     const previousBackendProfileKey = buildBackendProfileKey({
       apiUrl: store.get('apiUrl'),
-      idempresa: store.get('idempresa')
+      login: store.get('apiLogin'),
+      idfilial: store.get('idfilial') || store.get('idempresa')
     });
-    const nextBackendProfileKey = buildBackendProfileKey({ apiUrl, idempresa });
+    const nextBackendProfileKey = buildBackendProfileKey({ apiUrl, login: apiLogin });
 
-    if (previousBackendProfileKey && nextBackendProfileKey && previousBackendProfileKey !== nextBackendProfileKey) {
+    if (baseConfigChanged || (previousBackendProfileKey && nextBackendProfileKey && previousBackendProfileKey !== nextBackendProfileKey)) {
       myzapInfo('MyZap: backend/API da empresa alterado. Limpando cache remoto derivado.', {
         metadata: {
           previousBackendProfileKey,
@@ -773,7 +783,15 @@ if (!hasSingleInstanceLock) {
       clearDerivedBackendState(store);
     }
 
-    store.set({ idempresa, apiUrl, apiToken, myzap_backendProfileKey: nextBackendProfileKey });
+    store.set({
+      apiUrl,
+      apiLogin,
+      apiPassword,
+      apiToken: '',
+      idfilial: '',
+      idempresa: '',
+      myzap_backendProfileKey: nextBackendProfileKey
+    });
     await autoStartMyZap();
   });
 

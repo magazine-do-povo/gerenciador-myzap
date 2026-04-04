@@ -1,13 +1,8 @@
 const LOOP_INTERVAL_FALLBACK_MS = 3000;
-const LOG_POLL_MS = 4000;
-const MAX_LOG_LINES_UI = 200;
 
 let nextRunAt = null;
 let pollingHandle = null;
 let countdownHandle = null;
-let logPollingHandle = null;
-let lastLogTimestamp = null;
-let logEntries = [];
 
 function formatDateTime(value) {
   if (!value) return '-';
@@ -30,14 +25,64 @@ function showInlineError(message) {
   alertBox.classList.remove('d-none');
 }
 
+function normalizePhone(value) {
+  const digits = String(value || '').replace(/\D+/g, '');
+  return digits || '-';
+}
+
+function truncateText(value, maxLength = 160) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function buildPayloadSummary(endpoint, data) {
+  const endpointLabel = String(endpoint || '').replace(/^\/+/, '').trim() || '-';
+  const endpointNormalized = endpointLabel.toLowerCase();
+  const numero = normalizePhone(
+    data?.number
+    || data?.numero
+    || data?.phone
+    || data?.telefone
+    || data?.celular
+  );
+
+  let texto = '';
+
+  if (endpointNormalized === 'sendtext') {
+    texto = data?.text || data?.mensagem || data?.message || '';
+  } else if (endpointNormalized === 'sendfile64' || endpointNormalized === 'sendfile' || endpointNormalized === 'sendimage' || endpointNormalized === 'sendvideo') {
+    const filename = String(data?.filename || data?.name || '').trim();
+    const caption = String(data?.caption || data?.text || '').trim();
+    texto = [filename, caption].filter(Boolean).join(' - ');
+    if (!texto) {
+      texto = endpointNormalized === 'sendfile64' ? 'Arquivo em base64' : 'Arquivo/midia';
+    }
+  } else if (endpointNormalized === 'sendmultiplefile64' || endpointNormalized === 'sendmultiplefiles') {
+    const totalFiles = Array.isArray(data?.files) ? data.files.length : 0;
+    texto = totalFiles > 0 ? `${totalFiles} arquivo(s)` : 'Multiplos arquivos';
+  } else {
+    texto = data?.caption || data?.text || data?.message || data?.filename || data?.name || '';
+  }
+
+  if (!texto) {
+    texto = `Endpoint ${endpointLabel}`;
+  }
+
+  return {
+    endpoint: endpointLabel,
+    numero,
+    texto: truncateText(texto, 160) || '-'
+  };
+}
+
 function extrairResumoMensagem(jsonStr) {
   try {
     const payload = jsonStr ? JSON.parse(jsonStr) : {};
-    const numero = payload?.data?.number || '-';
-    const texto = payload?.data?.text || '-';
-    return { numero, texto };
+    return buildPayloadSummary(payload?.endpoint, payload?.data || {});
   } catch (_e) {
-    return { numero: '-', texto: 'JSON invalido' };
+    return { endpoint: '-', numero: '-', texto: 'JSON invalido' };
   }
 }
 
@@ -58,12 +103,15 @@ function renderFilaPendentes(mensagens) {
   }
 
   const linhas = mensagens.map((m) => {
-    const { numero, texto } = extrairResumoMensagem(m?.json);
+    const { numero, texto, endpoint } = extrairResumoMensagem(m?.json);
     return `
       <tr>
         <td>${m?.idfila ?? '-'}</td>
         <td>${numero}</td>
-        <td class="queue-message-cell">${texto}</td>
+        <td class="queue-message-cell">
+          <div class="queue-endpoint-tag">${escapeHtml(endpoint)}</div>
+          <div>${escapeHtml(texto)}</div>
+        </td>
         <td>${m?.status ?? '-'}</td>
         <td>${m?.datahorainclusao ?? '-'}</td>
       </tr>
@@ -165,6 +213,81 @@ async function atualizarFilaMyZap() {
   }
 }
 
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function getStatusChip(status) {
+  const normalized = String(status || '').toLowerCase();
+
+  if (normalized === 'enviado') {
+    return '<span class="queue-status-chip success">Enviado</span>';
+  }
+  if (normalized === 'erro') {
+    return '<span class="queue-status-chip error">Erro</span>';
+  }
+  if (normalized === 'pendente') {
+    return '<span class="queue-status-chip pending">Pendente</span>';
+  }
+
+  return `<span class="queue-status-chip neutral">${escapeHtml(status || '-')}</span>`;
+}
+
+function renderHistoricoEnvios(envios) {
+  const tbody = document.getElementById('queue-history-body');
+  const total = document.getElementById('queue-total-history');
+  if (!tbody || !total) return;
+
+  total.textContent = String(envios.length);
+
+  if (!envios.length) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" class="text-center text-muted-small">Nenhuma mensagem processada ainda.</td>
+      </tr>
+    `;
+    return;
+  }
+
+  const linhas = envios.map((entry) => {
+    const detalhe = entry?.erro
+      ? `<div class="queue-history-detail error">${escapeHtml(entry.erro)}</div>`
+      : '';
+    const inclusoEm = entry?.datahorainclusao
+      ? `<div class="queue-history-detail">Incluida em ${escapeHtml(formatDateTime(entry.datahorainclusao))}</div>`
+      : '';
+
+    return `
+      <tr>
+        <td>${escapeHtml(formatDateTime(entry?.processadoEm))}</td>
+        <td>${entry?.idfila ?? '-'}</td>
+        <td>${escapeHtml(entry?.numero || '-')}</td>
+        <td class="queue-message-cell">
+          <div class="queue-endpoint-tag">${escapeHtml(entry?.endpoint || '-')}</div>
+          <div>${escapeHtml(entry?.resumo || '-')}</div>
+          ${inclusoEm}
+          ${detalhe}
+        </td>
+        <td>${getStatusChip(entry?.status)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.innerHTML = linhas;
+}
+
+async function atualizarHistoricoFila() {
+  try {
+    const envios = await window.api.getQueueRecentMessages();
+    renderHistoricoEnvios(Array.isArray(envios) ? envios : []);
+  } catch (e) {
+    renderHistoricoEnvios([]);
+    showInlineError(`Falha ao carregar historico da fila: ${e?.message || e}`);
+  }
+}
+
 async function iniciarFilaMyZap() {
   const btn = document.getElementById('btn-start-queue');
   if (!btn) return;
@@ -180,13 +303,12 @@ async function iniciarFilaMyZap() {
     }
 
     showInlineError('');
-    await atualizarStatusProcessoFila();
-    await atualizarFilaMyZap();
+    await refreshAll();
   } catch (e) {
     showInlineError(`Erro ao iniciar processo da fila: ${e?.message || e}`);
   } finally {
     btn.textContent = txt;
-    await atualizarStatusProcessoFila();
+    await refreshAll();
   }
 }
 
@@ -205,18 +327,21 @@ async function pararFilaMyZap() {
     }
 
     showInlineError('');
-    await atualizarStatusProcessoFila();
+    await refreshAll();
   } catch (e) {
     showInlineError(`Erro ao parar processo da fila: ${e?.message || e}`);
   } finally {
     btn.textContent = txt;
-    await atualizarStatusProcessoFila();
+    await refreshAll();
   }
 }
 
 async function refreshAll() {
-  await atualizarStatusProcessoFila();
-  await atualizarFilaMyZap();
+  await Promise.all([
+    atualizarStatusProcessoFila(),
+    atualizarFilaMyZap(),
+    atualizarHistoricoFila()
+  ]);
 }
 
 // ── Buscar Agora ─────────────────────────────────────────
@@ -236,7 +361,6 @@ async function forcarBuscaAgora() {
     }
     showInlineError('');
     await refreshAll();
-    await fetchAndRenderLogs();
   } catch (e) {
     showInlineError(`Erro ao buscar agora: ${e?.message || e}`);
   } finally {
@@ -245,117 +369,10 @@ async function forcarBuscaAgora() {
   }
 }
 
-// ── Log em tempo real ────────────────────────────────────
-
-function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
-}
-
-function formatLogTimestamp(isoString) {
-  if (!isoString) return '';
-  const dt = new Date(isoString);
-  if (Number.isNaN(dt.getTime())) return '';
-  return dt.toLocaleString('pt-BR', {
-    day: '2-digit', month: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit'
-  });
-}
-
-function formatMeta(metadata) {
-  if (!metadata || typeof metadata !== 'object') return '';
-  const entries = Object.entries(metadata).filter(([k]) => k !== 'area');
-  if (!entries.length) return '';
-  return entries.map(([k, v]) => {
-    const val = typeof v === 'object' ? JSON.stringify(v) : String(v);
-    return `${k}: ${val}`;
-  }).join(', ');
-}
-
-function getActiveLogLevel() {
-  const select = document.getElementById('log-level-filter');
-  return select ? select.value : 'all';
-}
-
-function renderLogEntries() {
-  const container = document.getElementById('queue-log-container');
-  if (!container) return;
-
-  const filterLevel = getActiveLogLevel();
-  const filtered = filterLevel === 'all'
-    ? logEntries
-    : logEntries.filter((e) => e.level === filterLevel);
-
-  if (!filtered.length) {
-    container.innerHTML = '<div class="text-center text-muted-small py-3">Nenhum log ' +
-      (filterLevel !== 'all' ? `(${filterLevel}) ` : '') + 'encontrado.</div>';
-    return;
-  }
-
-  const html = filtered.map((entry) => {
-    const ts = formatLogTimestamp(entry.timestamp);
-    const level = (entry.level || 'info').toLowerCase();
-    const msg = escapeHtml(entry.message || '');
-    const meta = formatMeta(entry.metadata);
-    return `<div class="log-line">
-      <span class="log-ts">${ts}</span>
-      <span class="log-level-tag ${level}">${escapeHtml(level)}</span>
-      <span class="log-msg">${msg}${meta ? ' <span class="log-meta">| ' + escapeHtml(meta) + '</span>' : ''}</span>
-    </div>`;
-  }).join('');
-
-  container.innerHTML = html;
-
-  // Auto-scroll para o final
-  container.scrollTop = container.scrollHeight;
-}
-
-async function fetchAndRenderLogs() {
-  try {
-    const entries = await window.api.getQueueLogs(MAX_LOG_LINES_UI);
-    if (!Array.isArray(entries) || !entries.length) return;
-
-    // Filtrar apenas entradas mais recentes que o ultimo timestamp conhecido
-    // ou carregar tudo na primeira vez
-    if (lastLogTimestamp) {
-      const newEntries = entries.filter((e) => e.timestamp > lastLogTimestamp);
-      if (newEntries.length) {
-        logEntries = logEntries.concat(newEntries);
-        // Manter no maximo MAX_LOG_LINES_UI
-        if (logEntries.length > MAX_LOG_LINES_UI) {
-          logEntries = logEntries.slice(-MAX_LOG_LINES_UI);
-        }
-      }
-    } else {
-      logEntries = entries.slice(-MAX_LOG_LINES_UI);
-    }
-
-    if (logEntries.length) {
-      lastLogTimestamp = logEntries[logEntries.length - 1].timestamp;
-    }
-
-    renderLogEntries();
-  } catch (_e) {
-    // Silencioso — o proximo poll tenta novamente
-  }
-}
-
-function clearLogView() {
-  logEntries = [];
-  lastLogTimestamp = null;
-  const container = document.getElementById('queue-log-container');
-  if (container) {
-    container.innerHTML = '<div class="text-center text-muted-small py-3">Log limpo.</div>';
-  }
-}
-
 (async () => {
   const btnStart = document.getElementById('btn-start-queue');
   const btnStop = document.getElementById('btn-stop-queue');
   const btnForce = document.getElementById('btn-force-cycle');
-  const btnClearLog = document.getElementById('btn-clear-log');
-  const logLevelFilter = document.getElementById('log-level-filter');
 
   if (btnStart) {
     btnStart.addEventListener('click', iniciarFilaMyZap);
@@ -369,24 +386,13 @@ function clearLogView() {
     btnForce.addEventListener('click', forcarBuscaAgora);
   }
 
-  if (btnClearLog) {
-    btnClearLog.addEventListener('click', clearLogView);
-  }
-
-  if (logLevelFilter) {
-    logLevelFilter.addEventListener('change', renderLogEntries);
-  }
-
   await refreshAll();
-  await fetchAndRenderLogs();
 
   pollingHandle = setInterval(refreshAll, 3000);
   countdownHandle = setInterval(renderCountdown, 1000);
-  logPollingHandle = setInterval(fetchAndRenderLogs, LOG_POLL_MS);
 
   window.addEventListener('beforeunload', () => {
     if (pollingHandle) clearInterval(pollingHandle);
     if (countdownHandle) clearInterval(countdownHandle);
-    if (logPollingHandle) clearInterval(logPollingHandle);
   });
 })();
