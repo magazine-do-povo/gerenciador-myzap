@@ -37,7 +37,8 @@ function getCommandFailureDetail(commandResult) {
     .filter(Boolean)
     .filter((line) => !/^>/i.test(line))
     .filter((line) => !/^at\s+/i.test(line))
-    .filter((line) => !/^Lockfile is up to date/i.test(line));
+    .filter((line) => !/^Lockfile is up to date/i.test(line))
+    .filter((line) => !/resolution step is skipped/i.test(line));
 
   const detail = lines.find((line) => /ERR_PNPM|npm ERR!|unsupported|error|failed/i.test(line))
     || lines.find(Boolean)

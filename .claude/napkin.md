@@ -23,9 +23,11 @@
    Do instead: baixar Node.js portatil para executar o `pnpm` empacotado e baixar MinGit portatil para manutencao futura, ambos em `LOCALAPPDATA/gerenciador-myzap/runtime-tools`, sem depender de instalacao global.
 7. **[2026-04-06] Runtime portatil sem PATH no child quebra `pnpm install` e scripts internos**
    Do instead: em `buildCleanEnvForChild()`, prependar as pastas do Node.js portatil e do Git portatil ao `PATH` antes de spawnar `pnpm`, `npm`, `git` ou o MyZap.
-8. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
+8. **[2026-04-06] No Windows, `Path`/`PATH` duplicados podem fazer o child perder o Node instalado**
+   Do instead: normalizar a chave de ambiente do caminho em `buildCleanEnvForChild()`, remover duplicatas case-insensitive e escrever o diretório do Node do sistema na mesma chave (`Path` ou `PATH`) antes de spawnar o `pnpm`.
+9. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
    Do instead: baixar o pacote oficial do MyZap via arquivo compactado e executar o `pnpm` com o runtime do proprio app.
-9. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
+10. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
    Do instead: manter `node_modules/pnpm/**` em `asarUnpack` e resolver o caminho com fallback para `app.asar.unpacked`.
 
 ## Shell & Command Reliability

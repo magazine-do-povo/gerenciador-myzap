@@ -14,21 +14,46 @@ const {
 
 const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
 
+function getPathEnvironmentKey(env = process.env) {
+  const foundKey = Object.keys(env).find((key) => String(key).toLowerCase() === 'path');
+  if (foundKey) {
+    return foundKey;
+  }
+
+  return os.platform() === 'win32' ? 'Path' : 'PATH';
+}
+
 /**
  * Cria um env limpo para child processes do MyZap.
  * Remove ELECTRON_RUN_AS_NODE que contamina sub-processos (ex: Chrome/Puppeteer).
  */
 function buildCleanEnvForChild() {
+  if (os.platform() === 'win32') {
+    refreshPathWindows();
+  }
+
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ASAR;
 
   const separator = os.platform() === 'win32' ? ';' : ':';
-  const existingEntries = String(env.PATH || '')
+  const pathKey = getPathEnvironmentKey(env);
+  Object.keys(env).forEach((key) => {
+    if (key !== pathKey && String(key).toLowerCase() === 'path') {
+      delete env[key];
+    }
+  });
+
+  const existingEntries = String(env[pathKey] || '')
     .split(separator)
     .map((entry) => entry.trim())
     .filter(Boolean);
   const prependedEntries = [];
+
+  const installedSystemNodePath = findInstalledSystemNodePath();
+  if (installedSystemNodePath) {
+    prependedEntries.push(path.dirname(installedSystemNodePath));
+  }
 
   const portableNodePath = getPortableNodePath();
   if (portableNodePath) {
@@ -41,7 +66,7 @@ function buildCleanEnvForChild() {
   }
 
   const mergedEntries = [...new Set([...prependedEntries, ...existingEntries])];
-  env.PATH = mergedEntries.join(separator);
+  env[pathKey] = mergedEntries.join(separator);
 
   return env;
 }
