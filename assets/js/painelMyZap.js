@@ -1132,30 +1132,47 @@ async function tickQrPolling() {
   if (!qrBox || !statusIndicator) { stopQrPolling(); return; }
 
   try {
-    // 1. Verificar se ja conectou - checar TODOS os campos possiveis
-    var snap = null;
+    // Usar getSessionSnapshot que consolida verify + connection + cache de QR
+    var snapshot = null;
     try {
-      snap = await window.api.verifyRealStatus();
-      console.log('[MyZap UI] verifyRealStatus snap:', JSON.stringify(snap));
+      snapshot = await window.api.getSessionSnapshot();
+      console.log('[MyZap UI] getSessionSnapshot:', JSON.stringify(snapshot));
     } catch (_snapErr) {
-      console.warn('[MyZap UI] verifyRealStatus falhou:', _snapErr.message);
+      console.warn('[MyZap UI] getSessionSnapshot falhou:', _snapErr.message);
     }
 
-    var snapConnected = isPayloadConnected(snap);
+    // Fallback: se getSessionSnapshot nao estiver disponivel, tentar metodo antigo
+    if (!snapshot || snapshot.status === 'error') {
+      console.warn('[MyZap UI] tickQrPolling: snapshot indisponivel, tentando metodo legado');
+      var snap = null;
+      try { snap = await window.api.verifyRealStatus(); } catch (_e) {}
+      var connStatus = null;
+      try { connStatus = await window.api.getConnectionStatus(); } catch (_e) {}
 
-    // 2. Buscar getConnectionStatus (tanto para QR quanto para detectar conexao)
-    var connStatus = null;
-    try {
-      connStatus = await window.api.getConnectionStatus();
-      console.log('[MyZap UI] getConnectionStatus:', JSON.stringify(connStatus));
-    } catch (_connErr) {
-      console.warn('[MyZap UI] getConnectionStatus falhou:', _connErr.message);
+      if (isPayloadConnected(snap) || isPayloadConnected(connStatus)) {
+        stopQrPolling();
+        statusIndicator.className = 'status-indicator connected';
+        statusIndicator.textContent = 'Conectado';
+        qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
+        setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
+        setIaConfigVisibility(true);
+        return;
+      }
+      var legacyQr = extractQrCode(connStatus) || extractQrCode(snap);
+      if (legacyQr) {
+        statusIndicator.className = 'status-indicator waiting';
+        statusIndicator.textContent = 'Aguardando leitura do QR Code';
+        qrBox.innerHTML = '<img src="' + legacyQr + '" alt="QR Code WhatsApp"/>' +
+          '<div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>';
+        setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
+      }
+      return;
     }
 
-    var connConnected = isPayloadConnected(connStatus);
+    var sessionStatus = (snapshot.session_status || '').toLowerCase();
 
     // ---- CASO 1: Conectado -> atualizar UI e parar polling ----
-    if (snapConnected || connConnected) {
+    if (sessionStatus === 'connected') {
       stopQrPolling();
       statusIndicator.className = 'status-indicator connected';
       statusIndicator.textContent = 'Conectado';
@@ -1166,8 +1183,27 @@ async function tickQrPolling() {
       return;
     }
 
+    // Verificar conexao tambem nos payloads raw (caso session_status nao reflita)
+    if (snapshot.raw) {
+      if (isPayloadConnected(snapshot.raw.verify) || isPayloadConnected(snapshot.raw.connection)) {
+        stopQrPolling();
+        statusIndicator.className = 'status-indicator connected';
+        statusIndicator.textContent = 'Conectado';
+        qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
+        setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
+        setIaConfigVisibility(true);
+        console.log('[MyZap UI] Sessao conectada (raw)! Polling de QR encerrado.');
+        return;
+      }
+    }
+
     // ---- CASO 2: QR Code disponivel - exibir/atualizar ----
-    var newQr = extractQrCode(connStatus) || extractQrCode(snap);
+    var newQr = snapshot.qr_base64 || '';
+    // Fallback: tentar extrair QR dos payloads raw
+    if (!newQr && snapshot.raw) {
+      newQr = extractQrCode(snapshot.raw.connection) || extractQrCode(snapshot.raw.verify);
+    }
+
     if (newQr) {
       var existingImg = qrBox.querySelector('img');
       if (!existingImg || existingImg.src !== newQr) {

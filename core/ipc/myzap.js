@@ -6,6 +6,7 @@ const { getLogDir } = require('../utils/logger');
 const clonarRepositorio = require('../myzap/clonarRepositorio');
 const verificarDiretorio = require('../myzap/verificarDiretorio');
 const getConnectionStatus = require('../myzap/api/getConnectionStatus');
+const getSessionSnapshot = require('../myzap/api/getSessionSnapshot');
 const startSession = require('../myzap/api/startSession');
 const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
@@ -201,6 +202,21 @@ function registerMyZapHandlers(ipcMain) {
             return result;
         } catch (error) {
             warn('Falha ao verificar status real MyZap via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    ipcMain.handle('myzap:getSessionSnapshot', async () => {
+        try {
+            const result = await getSessionSnapshot();
+            return result;
+        } catch (error) {
+            warn('Falha ao obter snapshot de sessao MyZap via IPC', {
                 metadata: { error }
             });
             return {

@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   getPrivilegeStatus: () => ipcRenderer.invoke('myzap:getPrivilegeStatus'),
   ensureMyZapStarted: (forceRemote = false) => ipcRenderer.invoke('myzap:ensureStarted', forceRemote),
   getConnectionStatus: () => ipcRenderer.invoke('myzap:getConnectionStatus'),
+  getSessionSnapshot: () => ipcRenderer.invoke('myzap:getSessionSnapshot'),
   verifyRealStatus: () => ipcRenderer.invoke('myzap:verifyRealStatus'),
   startSession: () => ipcRenderer.invoke('myzap:startSession'),
   deleteSession: () => ipcRenderer.invoke('myzap:deleteSession'),
