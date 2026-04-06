@@ -8,6 +8,14 @@ const { error: logError, info } = require('./myzapLogger');
 const MYZAP_ARCHIVE_URL = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/refs/heads/main';
 const MAX_REDIRECTS = 5;
 
+function writeDebugLog(debugLog, message, metadata = {}) {
+  if (!debugLog || typeof debugLog.log !== 'function') {
+    return;
+  }
+
+  debugLog.log(message, metadata);
+}
+
 function baixarArquivo(url, destinationPath, redirectCount = 0) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, {
@@ -89,6 +97,48 @@ function localizarRaizExtraida(tempDir) {
   return path.join(tempDir, extractedDirectories[0]);
 }
 
+function localizarProjetoMyZap(rootDir) {
+  const directPackageJson = path.join(rootDir, 'package.json');
+  if (fs.existsSync(directPackageJson)) {
+    return rootDir;
+  }
+
+  const queue = [{ dir: rootDir, depth: 0 }];
+  const visited = new Set([path.resolve(rootDir)]);
+  const maxDepth = 4;
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    const currentDir = current.dir;
+    const currentDepth = current.depth;
+    const packageJsonPath = path.join(currentDir, 'package.json');
+
+    if (fs.existsSync(packageJsonPath)) {
+      return currentDir;
+    }
+
+    if (currentDepth >= maxDepth) {
+      continue;
+    }
+
+    const childDirs = fs.readdirSync(currentDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(currentDir, entry.name));
+
+    childDirs.forEach((childDir) => {
+      const resolvedChild = path.resolve(childDir);
+      if (visited.has(resolvedChild)) {
+        return;
+      }
+
+      visited.add(resolvedChild);
+      queue.push({ dir: childDir, depth: currentDepth + 1 });
+    });
+  }
+
+  return null;
+}
+
 function copiarConteudoDiretorio(sourceDir, destinationDir) {
   fs.mkdirSync(destinationDir, { recursive: true });
 
@@ -104,12 +154,19 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
   const reportProgress = (typeof options.onProgress === 'function')
     ? options.onProgress
     : () => {};
+  const debugLog = options.debugLog;
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'myzap-archive-'));
   const archivePath = path.join(tempDir, 'myzap-main.zip');
 
   try {
     validarDestinoInstalacao(dirPath);
     fs.mkdirSync(path.dirname(dirPath), { recursive: true });
+    writeDebugLog(debugLog, 'Iniciando download do pacote compactado do MyZap', {
+      dirPath,
+      archiveUrl: MYZAP_ARCHIVE_URL,
+      tempDir,
+      archivePath,
+    });
 
     reportProgress('Baixando pacote compactado do MyZap...', 'download_archive', {
       percent: 35,
@@ -118,6 +175,10 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
     });
 
     await baixarArquivo(MYZAP_ARCHIVE_URL, archivePath);
+    writeDebugLog(debugLog, 'Download do pacote do MyZap concluido', {
+      dirPath,
+      archivePath,
+    });
 
     reportProgress('Extraindo arquivos do MyZap...', 'extract_archive', {
       percent: 45,
@@ -126,23 +187,51 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
     });
 
     await extractZip(archivePath, { dir: tempDir });
+    writeDebugLog(debugLog, 'Extracao do pacote do MyZap concluida', {
+      dirPath,
+      tempDir,
+    });
 
     const extractedRoot = localizarRaizExtraida(tempDir);
-    copiarConteudoDiretorio(extractedRoot, dirPath);
+    const projectRoot = localizarProjetoMyZap(extractedRoot);
+    if (!projectRoot) {
+      throw new Error('Pacote do MyZap baixado, mas nao foi possivel localizar o package.json do projeto extraido.');
+    }
+
+    copiarConteudoDiretorio(projectRoot, dirPath);
+    writeDebugLog(debugLog, 'Conteudo do projeto MyZap copiado para o diretorio final', {
+      dirPath,
+      extractedRoot,
+      projectRoot,
+    });
+
+    const installedPackageJson = path.join(dirPath, 'package.json');
+    if (!fs.existsSync(installedPackageJson)) {
+      const installedEntries = fs.existsSync(dirPath) ? fs.readdirSync(dirPath) : [];
+      throw new Error(`Pacote do MyZap extraido, mas o package.json nao foi copiado para o diretorio final. Conteudo atual: ${installedEntries.join(', ') || '(vazio)'}.`);
+    }
 
     info('Pacote do MyZap baixado e extraido com sucesso', {
       metadata: {
         area: 'repositoryArchive',
         dirPath,
         archiveUrl: MYZAP_ARCHIVE_URL,
+        extractedRoot,
+        projectRoot,
       },
     });
 
     return {
       archiveUrl: MYZAP_ARCHIVE_URL,
       extractedRoot,
+      projectRoot,
     };
   } catch (err) {
+    writeDebugLog(debugLog, 'Falha ao baixar ou extrair pacote do MyZap', {
+      dirPath,
+      archiveUrl: MYZAP_ARCHIVE_URL,
+      error: err && err.message ? err.message : String(err),
+    });
     logError('Falha ao baixar ou extrair o pacote do MyZap', {
       metadata: {
         area: 'repositoryArchive',

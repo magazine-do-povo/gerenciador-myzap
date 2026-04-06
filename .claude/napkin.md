@@ -17,11 +17,15 @@
    Do instead: passar `getChildError` e `isChildAlive` como callbacks para `aguardarPorta`; verificar a cada iteracao e retornar false imediatamente se o child finalizou.
 4. **[2026-04-06] Refresh PATH do Windows antes de resolver comandos**
    Do instead: chamar `refreshPathWindows()` no inicio de `getPnpmCommand` e `getGitCommand` em win32 para ler PATH atualizado do registro.
-5. **[2026-04-06] Bootstrap local do MyZap deve provisionar runtimes portateis em `LOCALAPPDATA`**
+5. **[2026-04-06] Falha de setup do MyZap precisa gerar log dedicado por tentativa**
+   Do instead: criar um arquivo `*-myzap-install-debug.log` na pasta de logs do gerenciador e gravar nele checkpoints de runtime/ZIP/install, alem de stdout/stderr do comando que falhou.
+6. **[2026-04-06] Bootstrap local do MyZap deve provisionar runtimes portateis em `LOCALAPPDATA`**
    Do instead: baixar Node.js portatil para executar o `pnpm` empacotado e baixar MinGit portatil para manutencao futura, ambos em `LOCALAPPDATA/gerenciador-myzap/runtime-tools`, sem depender de instalacao global.
-6. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
+7. **[2026-04-06] Runtime portatil sem PATH no child quebra `pnpm install` e scripts internos**
+   Do instead: em `buildCleanEnvForChild()`, prependar as pastas do Node.js portatil e do Git portatil ao `PATH` antes de spawnar `pnpm`, `npm`, `git` ou o MyZap.
+8. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
    Do instead: baixar o pacote oficial do MyZap via arquivo compactado e executar o `pnpm` com o runtime do proprio app.
-7. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
+9. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
    Do instead: manter `node_modules/pnpm/**` em `asarUnpack` e resolver o caminho com fallback para `app.asar.unpacked`.
 
 ## Shell & Command Reliability
@@ -39,11 +43,13 @@
    Do instead: validar o bootstrap com `git rev-parse --is-inside-work-tree` ou `git remote -v`; nao assumir que a simples existencia de `.git` permite usar comandos Git.
 2. **[2026-03-16] Instalacoes por arquivo compactado nao possuem `.git`**
    Do instead: tratar `git pull` como opcional e so tentar atualizar quando a pasta `.git` existir.
-3. **[2026-04-03] Chamadas locais do MyZap com body customizado usam contrato proprio, nao o alias do Hub**
+3. **[2026-04-06] ZIP do MyZap precisa validar `package.json` no destino antes do `pnpm install`**
+   Do instead: depois de extrair/copiar o pacote, localizar o root real do projeto pelo `package.json` e abortar cedo se o diretorio final ficar sem `package.json`, em vez de deixar o erro aparecer como `ERR_PNPM_NO_PKG_MANIFEST`.
+4. **[2026-04-03] Chamadas locais do MyZap com body customizado usam contrato proprio, nao o alias do Hub**
    Do instead: antes de chamar a API local, sempre mesclar `session`, `sessionkey` e `session_name` ao body e normalizar aliases como `numero -> number` e `base64 -> path` nas rotas de fila como `sendFile64`.
-4. **[2026-04-06] NUNCA usar Electron como fallback para rodar MyZap (Puppeteer/Chrome falha)**
+5. **[2026-04-06] NUNCA usar Electron como fallback para rodar MyZap (Puppeteer/Chrome falha)**
    Do instead: se o Node.js real nao for encontrado, retornar null do runner direto e delegar para `getPnpmCommand()` que tem mais opcoes. Se nada funcionar, retornar erro claro ao usuario. O `ELECTRON_RUN_AS_NODE=1` contamina sub-processos e impede Chrome/Puppeteer de inicializar.
-5. **[2026-04-06] Sempre limpar env vars do Electron em runners que spawnam MyZap**
+6. **[2026-04-06] Sempre limpar env vars do Electron em runners que spawnam MyZap**
    Do instead: usar `buildCleanEnvForChild()` (que remove `ELECTRON_RUN_AS_NODE` e `ELECTRON_NO_ASAR`) em todos os runners (system-pnpm, system-npx, system-npm-exec, direct-node). Nao usar `process.env` diretamente.
 
 ## User Directives

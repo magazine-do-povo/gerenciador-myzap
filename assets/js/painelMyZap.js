@@ -1779,7 +1779,7 @@ async function installMyZap() {
     );
 
     if (clone.status === 'error') {
-      throw new Error(clone.message || 'Erro desconhecido');
+      throw new Error((clone.message || 'Erro desconhecido') + (clone.debugLogPath ? '\n\nLog de debug: ' + clone.debugLogPath : ''));
     }
 
     statusBadge.textContent = 'MyZap se encontra no diretorio configurado!';
@@ -1858,7 +1858,7 @@ async function reinstallMyZap() {
     );
 
     if (clone.status === 'error') {
-      throw new Error(clone.message || 'Erro desconhecido');
+      throw new Error((clone.message || 'Erro desconhecido') + (clone.debugLogPath ? '\n\nLog de debug: ' + clone.debugLogPath : ''));
     }
 
     statusBadge.textContent = 'MyZap se encontra no diretorio configurado!';

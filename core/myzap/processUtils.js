@@ -21,6 +21,27 @@ function buildCleanEnvForChild() {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.ELECTRON_NO_ASAR;
+
+  const separator = os.platform() === 'win32' ? ';' : ':';
+  const existingEntries = String(env.PATH || '')
+    .split(separator)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const prependedEntries = [];
+
+  const portableNodePath = getPortableNodePath();
+  if (portableNodePath) {
+    prependedEntries.push(path.dirname(portableNodePath));
+  }
+
+  const portableGitPath = getPortableGitPath();
+  if (portableGitPath) {
+    prependedEntries.push(path.dirname(portableGitPath));
+  }
+
+  const mergedEntries = [...new Set([...prependedEntries, ...existingEntries])];
+  env.PATH = mergedEntries.join(separator);
+
   return env;
 }
 

@@ -13,6 +13,14 @@ const PORTABLE_GIT_RELEASE_TAG = 'v2.45.1.windows.1';
 let portableNodeInFlight = null;
 let portableGitInFlight = null;
 
+function writeDebugLog(debugLog, message, metadata = {}) {
+  if (!debugLog || typeof debugLog.log !== 'function') {
+    return;
+  }
+
+  debugLog.log(message, metadata);
+}
+
 function getPortableToolsBaseDir() {
   const home = os.homedir();
 
@@ -181,10 +189,16 @@ async function installPortableZip(options = {}) {
     extractPhase,
     downloadPercent,
     extractPercent,
+    debugLog,
   } = options;
 
   const existingPath = resolvePathFromBase(installDir);
   if (existingPath) {
+    writeDebugLog(debugLog, `Runtime interno de ${toolName} ja disponivel`, {
+      toolName,
+      installDir,
+      existingPath,
+    });
     return {
       path: existingPath,
       downloaded: false,
@@ -202,12 +216,24 @@ async function installPortableZip(options = {}) {
     fs.mkdirSync(stagingDir, { recursive: true });
     fs.mkdirSync(path.dirname(installDir), { recursive: true });
 
+    writeDebugLog(debugLog, `Preparando runtime interno de ${toolName}`, {
+      toolName,
+      archiveUrl,
+      installDir,
+      stagingDir,
+    });
+
     reportProgress(downloadMessage, downloadPhase, {
       percent: downloadPercent,
       archiveUrl,
       installDir,
     });
     await downloadFile(archiveUrl, archivePath);
+    writeDebugLog(debugLog, `Download concluido para runtime interno de ${toolName}`, {
+      toolName,
+      archiveUrl,
+      archivePath,
+    });
 
     reportProgress(extractMessage, extractPhase, {
       percent: extractPercent,
@@ -215,6 +241,11 @@ async function installPortableZip(options = {}) {
       installDir,
     });
     await extractZip(archivePath, { dir: stagingDir });
+    writeDebugLog(debugLog, `Extracao concluida para runtime interno de ${toolName}`, {
+      toolName,
+      archivePath,
+      stagingDir,
+    });
 
     const stagedPath = resolvePathFromBase(stagingDir);
     if (!stagedPath) {
@@ -247,6 +278,12 @@ async function installPortableZip(options = {}) {
       archiveUrl,
     };
   } catch (err) {
+    writeDebugLog(debugLog, `Falha ao preparar runtime interno de ${toolName}`, {
+      toolName,
+      archiveUrl,
+      installDir,
+      error: err && err.message ? err.message : String(err),
+    });
     error(`Falha ao preparar runtime interno de ${toolName}`, {
       metadata: {
         area: 'runtimeTools',
@@ -291,6 +328,7 @@ async function ensurePortableNodeRuntime(options = {}) {
     extractPhase: 'extract_portable_node',
     downloadPercent: 15,
     extractPercent: 22,
+    debugLog: options.debugLog,
   }).finally(() => {
     portableNodeInFlight = null;
   });
@@ -325,6 +363,7 @@ async function ensurePortableGitRuntime(options = {}) {
     extractPhase: 'extract_portable_git',
     downloadPercent: 24,
     extractPercent: 30,
+    debugLog: options.debugLog,
   }).finally(() => {
     portableGitInFlight = null;
   });

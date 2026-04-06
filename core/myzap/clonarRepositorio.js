@@ -16,13 +16,47 @@ const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
+const { createInstallDebugLogContext } = require('./installDebugLog');
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
 }
 
+function getCommandFailureDetail(commandResult) {
+  if (!commandResult) {
+    return '';
+  }
+
+  const lines = [
+    String(commandResult.errorMessage || '').trim(),
+    ...String(commandResult.stderr || '').split(/\r?\n/),
+    ...String(commandResult.stdout || '').split(/\r?\n/),
+  ]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^>/i.test(line))
+    .filter((line) => !/^at\s+/i.test(line));
+
+  const detail = lines.find(Boolean) || '';
+  return detail.slice(0, 220);
+}
+
+function attachDebugLog(result, debugLog) {
+  if (!debugLog || !debugLog.filePath || !result || typeof result !== 'object') {
+    return result;
+  }
+
+  return {
+    ...result,
+    debugLogPath: debugLog.filePath,
+  };
+}
+
 function rodarComando(executor, args, opcoes = {}) {
   return new Promise((resolve) => {
+    const debugLog = opcoes.debugLog;
+    const spawnOptions = { ...opcoes };
+    delete spawnOptions.debugLog;
     const runner = (typeof executor === 'string')
       ? {
         command: executor,
@@ -42,11 +76,32 @@ function rodarComando(executor, args, opcoes = {}) {
       shell: runner.shell,
       env: runner.env,
       windowsHide: true,
-      ...opcoes,
+      ...spawnOptions,
     });
     const commandLabel = runner.source || runner.command;
+    let stdout = '';
+    let stderr = '';
+    let spawnErrorMessage = '';
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Executando comando do instalador MyZap', {
+        comando: runner.command,
+        args: [...runner.prefixArgs, ...args],
+        cwd: spawnOptions.cwd,
+        source: runner.source,
+        shell: runner.shell,
+      });
+    }
 
     proc.stdout.on('data', (data) => {
+      const text = data.toString();
+      stdout += text;
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('STDOUT do comando do instalador', {
+          comando: commandLabel,
+          output: text.trim(),
+        });
+      }
       info('MyZap comando stdout', {
         metadata: {
           area: 'clonarRepositorio',
@@ -56,6 +111,14 @@ function rodarComando(executor, args, opcoes = {}) {
       });
     });
     proc.stderr.on('data', (data) => {
+      const text = data.toString();
+      stderr += text;
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('STDERR do comando do instalador', {
+          comando: commandLabel,
+          output: text.trim(),
+        });
+      }
       warn('MyZap comando stderr', {
         metadata: {
           area: 'clonarRepositorio',
@@ -65,18 +128,60 @@ function rodarComando(executor, args, opcoes = {}) {
       });
     });
 
-    proc.on('close', (code) => resolve(code === 0));
-    proc.on('error', () => resolve(false));
+    proc.on('close', (code) => resolve({
+      ok: code === 0,
+      exitCode: code,
+      stdout,
+      stderr,
+      errorMessage: spawnErrorMessage,
+    }));
+    proc.on('error', (err) => {
+      spawnErrorMessage = getErrorMessage(err);
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('Erro ao spawnar comando do instalador', {
+          comando: commandLabel,
+          error: spawnErrorMessage,
+        });
+      }
+      resolve({
+        ok: false,
+        exitCode: null,
+        stdout,
+        stderr,
+        errorMessage: spawnErrorMessage,
+      });
+    });
   });
 }
 
 async function clonarRepositorio(dirPath, envContent, reinstall = false, options = {}) {
+  let debugLog = null;
   try {
-    const reportProgress = (typeof options.onProgress === 'function')
+    try {
+      debugLog = createInstallDebugLogContext({ dirPath, reinstall });
+      debugLog.section('inicio');
+      debugLog.log('Fluxo de instalacao do MyZap iniciado', { dirPath, reinstall });
+      info('Arquivo de debug da instalacao do MyZap criado', {
+        metadata: { area: 'clonarRepositorio', dirPath, reinstall, debugLogPath: debugLog.filePath },
+      });
+    } catch (_debugLogErr) {
+      debugLog = null;
+    }
+
+    const reportProgressBase = (typeof options.onProgress === 'function')
       ? options.onProgress
       : () => {};
+    const reportProgress = (message, phase, metadata = {}) => {
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('Progresso da instalacao', { message, phase, ...metadata });
+      }
+      reportProgressBase(message, phase, metadata);
+    };
 
     const privilegeStatus = getPrivilegeStatus();
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Privilegios verificados', { privilegeStatus });
+    }
     if (privilegeStatus.requiresAdminForLocalInstall && !privilegeStatus.isElevated) {
       const message = buildAdminRequiredMessage(
         reinstall ? 'reinstalar o MyZap local' : 'instalar o MyZap local',
@@ -104,12 +209,12 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
         privilegeStatus,
       });
 
-      return {
+      return attachDebugLog({
         status: 'error',
         requiresAdmin: true,
         privilegeStatus,
         message,
-      };
+      }, debugLog);
     }
 
     reportProgress('Preparando instalacao automatica do MyZap...', 'precheck', {
@@ -133,7 +238,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     });
 
     try {
-      await ensurePortableGitRuntime({ onProgress: reportProgress });
+      await ensurePortableGitRuntime({ onProgress: reportProgress, debugLog });
     } catch (gitRuntimeErr) {
       warn('Nao foi possivel preparar o Git interno. O fluxo continuara e usara ZIP para instalacao.', {
         metadata: {
@@ -145,7 +250,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     }
 
     try {
-      await ensurePortableNodeRuntime({ onProgress: reportProgress });
+      await ensurePortableNodeRuntime({ onProgress: reportProgress, debugLog });
     } catch (nodeRuntimeErr) {
       if (!findSystemNodePath()) {
         logError('Falha ao preparar Node.js interno e nenhum Node.js compativel foi encontrado no sistema.', {
@@ -155,10 +260,10 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
             error: getErrorMessage(nodeRuntimeErr),
           },
         });
-        return {
+        return attachDebugLog({
           status: 'error',
           message: 'Nao foi possivel preparar o runtime interno do Node.js para instalar o MyZap. Verifique sua conexao com a internet e tente novamente.',
-        };
+        }, debugLog);
       }
 
       warn('Falha ao preparar Node.js interno, mas um Node.js compativel ja existe no sistema. Continuando com o runtime do sistema.', {
@@ -179,10 +284,18 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
           dica: 'Verificar internet, permissao de escrita em LOCALAPPDATA e logs do gerenciador.',
         },
       });
-      return {
+      return attachDebugLog({
         status: 'error',
         message: 'Nao foi possivel preparar o instalador interno de dependencias do MyZap. Verifique sua conexao com a internet e tente novamente.',
-      };
+      }, debugLog);
+    }
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Runner de dependencias selecionado', {
+        runnerSource: pnpmRunner.source || pnpmRunner.command,
+        command: pnpmRunner.command,
+        prefixArgs: pnpmRunner.prefixArgs,
+      });
     }
 
     info('Runner de dependencias selecionado para instalacao do MyZap', {
@@ -216,10 +329,10 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
           fs.rmSync(dirPath, { recursive: true, force: true });
         } catch (err) {
           logError('Erro ao remover pasta do MyZap na reinstalacao', { metadata: { err, dirPath } });
-          return {
+          return attachDebugLog({
             status: 'error',
             message: `Falha ao remover diretorio atual do MyZap: ${err.message}`,
-          };
+          }, debugLog);
         }
       }
     }
@@ -229,6 +342,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     try {
       await downloadRepositoryArchive(dirPath, {
         onProgress: reportProgress,
+        debugLog,
       });
     } catch (archiveErr) {
       logError('Falha ao baixar o pacote do MyZap para instalacao local', {
@@ -238,10 +352,10 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
           error: archiveErr,
         },
       });
-      return {
+      return attachDebugLog({
         status: 'error',
         message: getErrorMessage(archiveErr) || 'Erro ao baixar o pacote do MyZap para instalacao local.',
-      };
+      }, debugLog);
     }
 
     transition('installing_dependencies', { message: 'Instalando dependencias do MyZap...', dirPath });
@@ -258,25 +372,32 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       percent: 55,
       dirPath,
     });
-    const instalouDeps = await rodarComando(
+    const installDepsResult = await rodarComando(
       pnpmRunner,
       ['install'],
-      { cwd: dirPath },
+      { cwd: dirPath, debugLog },
     );
 
-    if (!instalouDeps) {
+    if (!installDepsResult.ok) {
+      const installDetail = getCommandFailureDetail(installDepsResult);
       logError('Falha ao instalar dependencias com pnpm install', {
         metadata: {
           area: 'clonarRepositorio',
           runner: pnpmRunner.source || pnpmRunner.command,
           dirPath,
-          dica: 'Verificar logs anteriores (stderr) para detalhes do erro de instalacao.',
+          exitCode: installDepsResult.exitCode,
+          errorMessage: installDepsResult.errorMessage,
+          stderr: installDepsResult.stderr,
+          stdout: installDepsResult.stdout,
+          dica: 'Detalhe util registrado em stderr/stdout para diagnostico da instalacao.',
         },
       });
-      return {
+      return attachDebugLog({
         status: 'error',
-        message: 'Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais.',
-      };
+        message: installDetail
+          ? `Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais: ${installDetail}`
+          : 'Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais.',
+      }, debugLog);
     }
 
     info('Dependencias instaladas com sucesso', {
@@ -293,7 +414,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     });
 
     if (syncResult.status === 'error') {
-      return syncResult;
+      return attachDebugLog(syncResult, debugLog);
     }
 
     reportProgress('Iniciando servico local do MyZap...', 'start_service', {
@@ -304,21 +425,21 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       onProgress: reportProgress,
     });
     if (startResult && startResult.status === 'error') {
-      return startResult;
+      return attachDebugLog(startResult, debugLog);
     }
 
     reportProgress('MyZap local iniciado. Finalizando ajustes...', 'start_confirmed', {
       percent: 95,
       dirPath,
     });
-    return {
+    return attachDebugLog({
       status: 'success',
       message: 'MyZap instalado, configurado e iniciado com sucesso!',
-    };
+    }, debugLog);
   } catch (err) {
     transition('error', { message: getErrorMessage(err), phase: 'clone_install' });
     logError('Erro critico no processo de instalacao', { metadata: { error: err } });
-    return { status: 'error', message: `Erro: ${err.message}` };
+    return attachDebugLog({ status: 'error', message: `Erro: ${err.message}` }, debugLog);
   }
 }
 
