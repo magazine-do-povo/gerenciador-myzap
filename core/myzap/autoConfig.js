@@ -298,6 +298,11 @@ function materializeEnvContent({ baseEnv, sessionKey, sessionName, myzapApiToken
         return buildDefaultEnv({ sessionKey, myzapApiToken });
     }
 
+    // Garantir que PORT esteja presente (obrigatorio para o MyZap iniciar)
+    if (!/^PORT=/m.test(content)) {
+        content = upsertEnvLine(content, 'PORT', '5555');
+    }
+
     content = upsertEnvLine(content, 'SESSION_NAME', sessionName || sessionKey);
     content = upsertEnvLine(content, 'SESSION_KEY', sessionKey);
     content = upsertEnvLine(content, 'SESSIONKEY', sessionKey);
