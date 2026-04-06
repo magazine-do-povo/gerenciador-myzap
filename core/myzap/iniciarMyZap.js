@@ -1,76 +1,19 @@
-const { spawn, spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { error: logError, info, warn } = require('./myzapLogger');
 const {
   isPortInUse,
   isLocalHttpServiceReachable,
   getPnpmCommand,
   getGitCommand,
+  findSystemNodePath,
+  buildCleanEnvForChild,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
-}
-
-/**
- * Cria um env limpo para child processes do MyZap.
- * Remove ELECTRON_RUN_AS_NODE que contamina sub-processos (ex: Chrome/Puppeteer).
- */
-function buildCleanChildEnv() {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-  delete env.ELECTRON_NO_ASAR;
-  return env;
-}
-
-/**
- * Tenta encontrar o Node.js real do sistema (nao o binario do Electron).
- * Retorna o path absoluto ou null se nao encontrado.
- */
-function findSystemNode() {
-  const isWin = os.platform() === 'win32';
-  const checker = isWin ? 'where' : 'which';
-
-  try {
-    const result = spawnSync(checker, ['node'], {
-      encoding: 'utf8',
-      shell: false,
-      windowsHide: true,
-      timeout: 5000,
-    });
-
-    if (result.error || result.status !== 0) return null;
-
-    const candidates = String(result.stdout || '')
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    // Pegar o primeiro que NAO seja o binario do Electron
-    const electronBin = process.execPath.toLowerCase();
-    for (const candidate of candidates) {
-      if (candidate.toLowerCase() === electronBin) continue;
-      // Validar que e um Node.js real
-      const check = spawnSync(candidate, ['--version'], {
-        encoding: 'utf8',
-        shell: false,
-        windowsHide: true,
-        timeout: 5000,
-      });
-      if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
-        info('Node.js real do sistema encontrado', {
-          metadata: { area: 'iniciarMyZap', nodePath: candidate, version: String(check.stdout).trim() },
-        });
-        return candidate;
-      }
-    }
-  } catch (_err) {
-    // melhor esforco
-  }
-  return null;
 }
 
 function resolveDirectMyZapStartRunner(dirPath) {
@@ -95,34 +38,26 @@ function resolveDirectMyZapStartRunner(dirPath) {
 
     // Preferir Node.js real do sistema — Puppeteer/Chrome nao funciona bem
     // quando o processo pai e o Electron com ELECTRON_RUN_AS_NODE=1
-    const systemNode = findSystemNode();
+    const systemNode = findSystemNodePath();
     if (systemNode) {
-      info('Usando Node.js real do sistema para iniciar MyZap', {
+      info('Usando Node.js real do sistema para iniciar MyZap (direct-node)', {
         metadata: { area: 'iniciarMyZap', nodePath: systemNode, entryFile },
       });
       return {
         command: systemNode,
         prefixArgs: [entryFile],
         shell: false,
-        env: buildCleanChildEnv(),
+        env: buildCleanEnvForChild(),
         source: 'direct-node-start',
       };
     }
 
-    // Fallback: usar Electron como Node.js
-    warn('Node.js real nao encontrado, usando Electron como fallback (pode causar problemas com Puppeteer)', {
+    // NAO usar Electron como fallback — Puppeteer/Chrome falha com ELECTRON_RUN_AS_NODE.
+    // Retornar null para cair no getPnpmCommand() que tem mais opcoes de fallback.
+    warn('Node.js real nao encontrado para direct-node; delegando para getPnpmCommand', {
       metadata: { area: 'iniciarMyZap', electronPath: process.execPath },
     });
-    return {
-      command: process.execPath,
-      prefixArgs: [entryFile],
-      shell: false,
-      env: {
-        ...buildCleanChildEnv(),
-        ELECTRON_RUN_AS_NODE: '1',
-      },
-      source: 'direct-node-start-electron-fallback',
-    };
+    return null;
   } catch (_err) {
     return null;
   }

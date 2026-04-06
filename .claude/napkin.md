@@ -9,11 +9,13 @@
 
 ## Execution & Validation (Highest Priority)
 
-1. **[2026-04-06] Validar comandos encontrados no PATH com --version antes de usar**
+1. **[2026-04-06] refreshPathWindows DEVE rodar DENTRO de findSystemNodePath, nao so em getPnpmCommand**
+   Do instead: chamar `refreshPathWindows()` no inicio de `findSystemNodePath()` em win32 para garantir que o PATH do registro esta atualizado ANTES de rodar `where node`. O `findSystemNodePath` e chamado antes do refresh em `getPnpmCommand` e o resultado e cacheado — sem refresh interno, o cache guarda `null` permanentemente.
+2. **[2026-04-06] Validar comandos encontrados no PATH com --version antes de usar**
    Do instead: apos `resolveCommandPath`, rodar `spawnSync(cmd, ['--version'])` e descartar se falhar. Evita falso positivo de PATH stale.
-2. **[2026-04-06] aguardarPorta deve abortar se child process ja morreu**
+3. **[2026-04-06] aguardarPorta deve abortar se child process ja morreu**
    Do instead: passar `getChildError` e `isChildAlive` como callbacks para `aguardarPorta`; verificar a cada iteracao e retornar false imediatamente se o child finalizou.
-3. **[2026-04-06] Refresh PATH do Windows antes de resolver comandos**
+4. **[2026-04-06] Refresh PATH do Windows antes de resolver comandos**
    Do instead: chamar `refreshPathWindows()` no inicio de `getPnpmCommand` e `getGitCommand` em win32 para ler PATH atualizado do registro.
 4. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
    Do instead: baixar o pacote oficial do MyZap via arquivo compactado e executar o `pnpm` com o runtime do proprio app.
@@ -37,8 +39,10 @@
    Do instead: tratar `git pull` como opcional e so tentar atualizar quando a pasta `.git` existir.
 3. **[2026-04-03] Chamadas locais do MyZap com body customizado usam contrato proprio, nao o alias do Hub**
    Do instead: antes de chamar a API local, sempre mesclar `session`, `sessionkey` e `session_name` ao body e normalizar aliases como `numero -> number` e `base64 -> path` nas rotas de fila como `sendFile64`.
-4. **[2026-04-03] `pnpm start` do MyZap local pode disparar `cmd.exe` no Windows**
-   Do instead: quando o script `start` for apenas `node <arquivo>.js`, iniciar direto via `process.execPath` com `ELECTRON_RUN_AS_NODE=1` e evitar o shell do package manager.
+4. **[2026-04-06] NUNCA usar Electron como fallback para rodar MyZap (Puppeteer/Chrome falha)**
+   Do instead: se o Node.js real nao for encontrado, retornar null do runner direto e delegar para `getPnpmCommand()` que tem mais opcoes. Se nada funcionar, retornar erro claro ao usuario. O `ELECTRON_RUN_AS_NODE=1` contamina sub-processos e impede Chrome/Puppeteer de inicializar.
+5. **[2026-04-06] Sempre limpar env vars do Electron em runners que spawnam MyZap**
+   Do instead: usar `buildCleanEnvForChild()` (que remove `ELECTRON_RUN_AS_NODE` e `ELECTRON_NO_ASAR`) em todos os runners (system-pnpm, system-npx, system-npm-exec, direct-node). Nao usar `process.env` diretamente.
 
 ## User Directives
 

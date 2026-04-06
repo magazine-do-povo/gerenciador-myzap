@@ -29,7 +29,16 @@ function findSystemNodePath() {
   if (_cachedSystemNodePath !== undefined) return _cachedSystemNodePath;
 
   const isWin = os.platform() === 'win32';
+
+  // Atualizar PATH do Windows via registro ANTES de buscar node.
+  // Sem isso, o Electron pode herdar um PATH defasado do Explorer
+  // e nao encontrar o Node.js instalado pelo usuario.
+  if (isWin) {
+    refreshPathWindows();
+  }
+
   const checker = isWin ? 'where' : 'which';
+  const electronBin = process.execPath.toLowerCase();
 
   try {
     const result = spawnSync(checker, ['node'], {
@@ -45,7 +54,6 @@ function findSystemNodePath() {
         .map((l) => l.trim())
         .filter(Boolean);
 
-      const electronBin = process.execPath.toLowerCase();
       for (const candidate of candidates) {
         if (candidate.toLowerCase() === electronBin) continue;
         const check = spawnSync(candidate, ['--version'], {
@@ -55,7 +63,7 @@ function findSystemNodePath() {
           timeout: 5000,
         });
         if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
-          logInfo('Node.js real do sistema encontrado (processUtils)', {
+          logInfo('Node.js real do sistema encontrado via PATH', {
             metadata: { area: 'processUtils', nodePath: candidate, version: String(check.stdout).trim() },
           });
           _cachedSystemNodePath = candidate;
@@ -65,6 +73,29 @@ function findSystemNodePath() {
     }
   } catch (_err) { /* melhor esforco */ }
 
+  // Fallback: verificar caminhos conhecidos de instalacao no Windows
+  if (isWin) {
+    const knownPath = getKnownCommandPath('node');
+    if (knownPath && knownPath.toLowerCase() !== electronBin) {
+      const check = spawnSync(knownPath, ['--version'], {
+        encoding: 'utf8',
+        shell: false,
+        windowsHide: true,
+        timeout: 5000,
+      });
+      if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
+        logInfo('Node.js real encontrado em caminho conhecido do Windows', {
+          metadata: { area: 'processUtils', nodePath: knownPath, version: String(check.stdout).trim() },
+        });
+        _cachedSystemNodePath = knownPath;
+        return knownPath;
+      }
+    }
+  }
+
+  logWarn('Node.js real do sistema NAO encontrado (Puppeteer pode nao funcionar)', {
+    metadata: { area: 'processUtils', platform: os.platform(), electronPath: process.execPath },
+  });
   _cachedSystemNodePath = null;
   return null;
 }
@@ -677,7 +708,7 @@ async function getPnpmCommand() {
         command: pnpmPath,
         prefixArgs: [],
         shell: false,
-        env: process.env,
+        env: buildCleanEnvForChild(),
         source: 'system-pnpm',
       };
     }
@@ -699,7 +730,7 @@ async function getPnpmCommand() {
         command: npxPath,
         prefixArgs: ['pnpm'],
         shell: false,
-        env: process.env,
+        env: buildCleanEnvForChild(),
         source: 'system-npx',
       };
     }
@@ -721,7 +752,7 @@ async function getPnpmCommand() {
         command: npmPath,
         prefixArgs: ['exec', 'pnpm', '--'],
         shell: false,
-        env: process.env,
+        env: buildCleanEnvForChild(),
         source: 'system-npm-exec',
       };
     }
@@ -784,4 +815,6 @@ module.exports = {
   getPnpmCommand,
   getGitCommand,
   refreshPathWindows,
+  findSystemNodePath,
+  buildCleanEnvForChild,
 };
