@@ -998,6 +998,17 @@ async function ensureMyZapReadyAndStart(options = {}) {
             startResult = await atualizarEnv(dirPath, envContent, {
                 onProgress: reportProgress
             });
+        } else if (checkDir.needsReinstall) {
+            warn('MyZap start: instalacao incompleta detectada, reinstalando...', {
+                metadata: { area: 'autoConfig', dirPath, checkDir }
+            });
+            stepProgress('Instalacao incompleta detectada. Reinstalando MyZap...', 'reinstall_incomplete', {
+                dirPath,
+                reason: checkDir.message
+            });
+            startResult = await clonarRepositorio(dirPath, envContent, true, {
+                onProgress: reportProgress
+            });
         } else {
             stepProgress('Instalacao local nao encontrada. Iniciando instalacao (clone/dependencias)...', 'install_local', {
                 dirPath
