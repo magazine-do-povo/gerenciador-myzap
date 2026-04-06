@@ -4,6 +4,12 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger');
+const {
+  getPortableNodePath,
+  getPortableGitPath,
+  ensurePortableNodeRuntime,
+  ensurePortableGitRuntime,
+} = require('./runtimeTools');
 
 const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
 
@@ -91,9 +97,26 @@ function findSystemNodePath() {
         return knownPath;
       }
     }
+
+    const portableNodePath = getPortableNodePath();
+    if (portableNodePath && portableNodePath.toLowerCase() !== electronBin) {
+      const check = spawnSync(portableNodePath, ['--version'], {
+        encoding: 'utf8',
+        shell: false,
+        windowsHide: true,
+        timeout: 5000,
+      });
+      if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
+        logInfo('Node.js portatil do gerenciador encontrado', {
+          metadata: { area: 'processUtils', nodePath: portableNodePath, version: String(check.stdout).trim() },
+        });
+        _cachedSystemNodePath = portableNodePath;
+        return portableNodePath;
+      }
+    }
   }
 
-  logWarn('Node.js real do sistema NAO encontrado (Puppeteer pode nao funcionar)', {
+  logWarn('Nenhum Node.js compativel encontrado (sistema ou portatil)', {
     metadata: { area: 'processUtils', platform: os.platform(), electronPath: process.execPath },
   });
   _cachedSystemNodePath = null;
@@ -449,13 +472,16 @@ function getPrivilegeStatus() {
   const platform = os.platform();
 
   if (platform === 'win32') {
+    // Em dev mode (app nao empacotado), nao exigir admin
+    const packaged = isElectronPackagedApp();
     const detected = detectWindowsElevation();
-    const needsAdminForLocalInstall = !detected.isElevated;
+    const requiresAdmin = packaged;
+    const needsAdminForLocalInstall = requiresAdmin && !detected.isElevated;
 
     return {
       platform,
       isElevated: Boolean(detected.isElevated),
-      requiresAdminForLocalInstall: true,
+      requiresAdminForLocalInstall: requiresAdmin,
       needsAdminForLocalInstall,
       method: detected.method || 'unknown',
       message: needsAdminForLocalInstall ? buildAdminRequiredMessage() : '',
@@ -572,11 +598,11 @@ function getBundledPnpmCommand() {
       return null;
     }
 
-    // Preferir Node.js real do sistema se disponivel
-    const systemNode = findSystemNodePath();
-    if (systemNode) {
+    // Preferir Node.js real do sistema ou runtime portatil do gerenciador.
+    const preferredNode = findSystemNodePath();
+    if (preferredNode) {
       return {
-        command: systemNode,
+        command: preferredNode,
         prefixArgs: [cliPath],
         shell: false,
         env: buildCleanEnvForChild(),
@@ -584,17 +610,7 @@ function getBundledPnpmCommand() {
       };
     }
 
-    // Fallback: usar binario do Electron como Node.js
-    return {
-      command: process.execPath,
-      prefixArgs: [cliPath],
-      shell: false,
-      env: {
-        ...buildCleanEnvForChild(),
-        ELECTRON_RUN_AS_NODE: '1',
-      },
-      source: 'bundled-pnpm-electron',
-    };
+    return null;
   } catch (_err) {
     return null;
   }
@@ -676,17 +692,38 @@ async function getPnpmCommand() {
     metadata: { area: 'processUtils', fase: 'getPnpmCommand' },
   });
 
-  const bundledRunner = getBundledPnpmCommand();
+  let bundledRunner = getBundledPnpmCommand();
   if (bundledRunner) {
     logInfo('Usando pnpm empacotado (bundled)', {
       metadata: { area: 'processUtils', source: 'bundled-pnpm' },
     });
     return bundledRunner;
   }
+
+  if (os.platform() === 'win32' && !findSystemNodePath()) {
+    try {
+      const portableNode = await ensurePortableNodeRuntime();
+      if (portableNode && portableNode.path) {
+        _cachedSystemNodePath = portableNode.path;
+        bundledRunner = getBundledPnpmCommand();
+        if (bundledRunner) {
+          logInfo('Usando pnpm empacotado com Node.js portatil do gerenciador', {
+            metadata: { area: 'processUtils', nodePath: portableNode.path },
+          });
+          return bundledRunner;
+        }
+      }
+    } catch (err) {
+      logWarn('Falha ao baixar/preparar Node.js portatil do gerenciador', {
+        metadata: { area: 'processUtils', error: err.message },
+      });
+    }
+  }
+
   logDebug('pnpm empacotado nao disponivel', { metadata: { area: 'processUtils' } });
 
   if (isElectronPackagedApp()) {
-    logWarn('App empacotado sem pnpm bundled — nenhum runner disponivel', {
+    logWarn('App empacotado sem pnpm bundled ou Node.js compativel — nenhum runner disponivel', {
       metadata: { area: 'processUtils' },
     });
     return null;
@@ -763,6 +800,26 @@ async function getPnpmCommand() {
     logDebug('npm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
+  if (os.platform() === 'win32') {
+    try {
+      const portableNode = await ensurePortableNodeRuntime();
+      if (portableNode && portableNode.path) {
+        _cachedSystemNodePath = portableNode.path;
+        bundledRunner = getBundledPnpmCommand();
+        if (bundledRunner) {
+          logInfo('Fallback final: usando pnpm empacotado com Node.js portatil', {
+            metadata: { area: 'processUtils', nodePath: portableNode.path },
+          });
+          return bundledRunner;
+        }
+      }
+    } catch (err) {
+      logWarn('Falha no fallback do Node.js portatil ao obter pnpm', {
+        metadata: { area: 'processUtils', error: err.message },
+      });
+    }
+  }
+
   logWarn('Nenhum gerenciador de pacotes (pnpm/npx/npm) encontrado ou funcional no sistema', {
     metadata: { area: 'processUtils', platform: os.platform() },
   });
@@ -778,30 +835,65 @@ async function getGitCommand() {
   }
 
   const gitPath = await resolveCommandPath('git');
-  if (!gitPath) {
-    logInfo('Git nao encontrado no PATH do sistema', {
-      metadata: { area: 'processUtils', platform: os.platform() },
+  if (gitPath && validateCommand(gitPath, ['--version'])) {
+    logInfo('Git detectado e validado', {
+      metadata: { area: 'processUtils', source: 'system-git', path: gitPath },
     });
-    return null;
+    return {
+      command: gitPath,
+      prefixArgs: [],
+      shell: false,
+      env: buildCleanEnvForChild(),
+      source: 'system-git',
+    };
   }
 
-  if (!validateCommand(gitPath, ['--version'])) {
+  if (gitPath) {
     logWarn('Git encontrado no PATH mas falhou na validacao (--version)', {
       metadata: { area: 'processUtils', path: gitPath },
     });
-    return null;
   }
 
-  logInfo('Git detectado e validado', {
-    metadata: { area: 'processUtils', source: 'system-git', path: gitPath },
+  const portableGitPath = getPortableGitPath();
+  if (portableGitPath && validateCommand(portableGitPath, ['--version'])) {
+    logInfo('Git portatil do gerenciador detectado e validado', {
+      metadata: { area: 'processUtils', source: 'portable-git', path: portableGitPath },
+    });
+    return {
+      command: portableGitPath,
+      prefixArgs: [],
+      shell: false,
+      env: buildCleanEnvForChild(),
+      source: 'portable-git',
+    };
+  }
+
+  if (os.platform() === 'win32') {
+    try {
+      const portableGit = await ensurePortableGitRuntime();
+      if (portableGit && portableGit.path && validateCommand(portableGit.path, ['--version'])) {
+        logInfo('Git portatil baixado e validado com sucesso', {
+          metadata: { area: 'processUtils', source: 'portable-git', path: portableGit.path },
+        });
+        return {
+          command: portableGit.path,
+          prefixArgs: [],
+          shell: false,
+          env: buildCleanEnvForChild(),
+          source: 'portable-git',
+        };
+      }
+    } catch (err) {
+      logWarn('Falha ao baixar/preparar Git portatil do gerenciador', {
+        metadata: { area: 'processUtils', error: err.message },
+      });
+    }
+  }
+
+  logInfo('Git nao encontrado no PATH nem no cache portatil do gerenciador', {
+    metadata: { area: 'processUtils', platform: os.platform() },
   });
-  return {
-    command: gitPath,
-    prefixArgs: [],
-    shell: false,
-    env: process.env,
-    source: 'system-git',
-  };
+  return null;
 }
 
 module.exports = {

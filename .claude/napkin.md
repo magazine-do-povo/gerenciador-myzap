@@ -17,9 +17,11 @@
    Do instead: passar `getChildError` e `isChildAlive` como callbacks para `aguardarPorta`; verificar a cada iteracao e retornar false imediatamente se o child finalizou.
 4. **[2026-04-06] Refresh PATH do Windows antes de resolver comandos**
    Do instead: chamar `refreshPathWindows()` no inicio de `getPnpmCommand` e `getGitCommand` em win32 para ler PATH atualizado do registro.
-4. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
+5. **[2026-04-06] Bootstrap local do MyZap deve provisionar runtimes portateis em `LOCALAPPDATA`**
+   Do instead: baixar Node.js portatil para executar o `pnpm` empacotado e baixar MinGit portatil para manutencao futura, ambos em `LOCALAPPDATA/gerenciador-myzap/runtime-tools`, sem depender de instalacao global.
+6. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
    Do instead: baixar o pacote oficial do MyZap via arquivo compactado e executar o `pnpm` com o runtime do proprio app.
-5. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
+7. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
    Do instead: manter `node_modules/pnpm/**` em `asarUnpack` e resolver o caminho com fallback para `app.asar.unpacked`.
 
 ## Shell & Command Reliability

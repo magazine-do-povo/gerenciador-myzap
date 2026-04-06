@@ -4,9 +4,14 @@ const { error: logError, warn, info } = require('./myzapLogger');
 const {
   killProcessesOnPort,
   getPnpmCommand,
+  findSystemNodePath,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
 } = require('./processUtils');
+const {
+  ensurePortableNodeRuntime,
+  ensurePortableGitRuntime,
+} = require('./runtimeTools');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
@@ -121,18 +126,62 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     info('Detectando gerenciador de pacotes para instalacao...', {
       metadata: { area: 'clonarRepositorio', dirPath },
     });
-    const pnpmRunner = await getPnpmCommand();
-    if (!pnpmRunner) {
-      logError('Nenhum gerenciador de pacotes disponivel (pnpm/npx/npm). Verificar se Node.js esta instalado.', {
+
+    reportProgress('Preparando ferramentas internas do gerenciador...', 'prepare_internal_runtimes', {
+      percent: 12,
+      dirPath,
+    });
+
+    try {
+      await ensurePortableGitRuntime({ onProgress: reportProgress });
+    } catch (gitRuntimeErr) {
+      warn('Nao foi possivel preparar o Git interno. O fluxo continuara e usara ZIP para instalacao.', {
         metadata: {
           area: 'clonarRepositorio',
           dirPath,
-          dica: 'Instalar Node.js em https://nodejs.org e reiniciar o gerenciador.',
+          error: getErrorMessage(gitRuntimeErr),
+        },
+      });
+    }
+
+    try {
+      await ensurePortableNodeRuntime({ onProgress: reportProgress });
+    } catch (nodeRuntimeErr) {
+      if (!findSystemNodePath()) {
+        logError('Falha ao preparar Node.js interno e nenhum Node.js compativel foi encontrado no sistema.', {
+          metadata: {
+            area: 'clonarRepositorio',
+            dirPath,
+            error: getErrorMessage(nodeRuntimeErr),
+          },
+        });
+        return {
+          status: 'error',
+          message: 'Nao foi possivel preparar o runtime interno do Node.js para instalar o MyZap. Verifique sua conexao com a internet e tente novamente.',
+        };
+      }
+
+      warn('Falha ao preparar Node.js interno, mas um Node.js compativel ja existe no sistema. Continuando com o runtime do sistema.', {
+        metadata: {
+          area: 'clonarRepositorio',
+          dirPath,
+          error: getErrorMessage(nodeRuntimeErr),
+        },
+      });
+    }
+
+    const pnpmRunner = await getPnpmCommand();
+    if (!pnpmRunner) {
+      logError('Nenhum gerenciador de pacotes disponivel (pnpm/npx/npm) mesmo apos preparar runtime interno.', {
+        metadata: {
+          area: 'clonarRepositorio',
+          dirPath,
+          dica: 'Verificar internet, permissao de escrita em LOCALAPPDATA e logs do gerenciador.',
         },
       });
       return {
         status: 'error',
-        message: 'Nao foi possivel carregar o instalador interno de dependencias do MyZap. Verifique se o Node.js esta instalado.',
+        message: 'Nao foi possivel preparar o instalador interno de dependencias do MyZap. Verifique sua conexao com a internet e tente novamente.',
       };
     }
 
