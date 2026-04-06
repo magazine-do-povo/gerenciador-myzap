@@ -112,13 +112,27 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       dirPath,
     });
 
+    info('=== Inicio do fluxo de instalacao/clonagem do MyZap ===', {
+      metadata: { area: 'clonarRepositorio', dirPath, reinstall },
+    });
+
     transition('checking_config', { message: 'Preparando instalacao automatica do MyZap...', dirPath });
 
+    info('Detectando gerenciador de pacotes para instalacao...', {
+      metadata: { area: 'clonarRepositorio', dirPath },
+    });
     const pnpmRunner = await getPnpmCommand();
     if (!pnpmRunner) {
+      logError('Nenhum gerenciador de pacotes disponivel (pnpm/npx/npm). Verificar se Node.js esta instalado.', {
+        metadata: {
+          area: 'clonarRepositorio',
+          dirPath,
+          dica: 'Instalar Node.js em https://nodejs.org e reiniciar o gerenciador.',
+        },
+      });
       return {
         status: 'error',
-        message: 'Nao foi possivel carregar o instalador interno de dependencias do MyZap.',
+        message: 'Nao foi possivel carregar o instalador interno de dependencias do MyZap. Verifique se o Node.js esta instalado.',
       };
     }
 
@@ -183,6 +197,14 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 
     transition('installing_dependencies', { message: 'Instalando dependencias do MyZap...', dirPath });
 
+    info('Executando pnpm install para instalar dependencias...', {
+      metadata: {
+        area: 'clonarRepositorio',
+        runner: pnpmRunner.source || pnpmRunner.command,
+        dirPath,
+      },
+    });
+
     reportProgress('Instalando dependencias do MyZap...', 'install_dependencies', {
       percent: 55,
       dirPath,
@@ -194,11 +216,23 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
     );
 
     if (!instalouDeps) {
+      logError('Falha ao instalar dependencias com pnpm install', {
+        metadata: {
+          area: 'clonarRepositorio',
+          runner: pnpmRunner.source || pnpmRunner.command,
+          dirPath,
+          dica: 'Verificar logs anteriores (stderr) para detalhes do erro de instalacao.',
+        },
+      });
       return {
         status: 'error',
         message: 'Pacote do MyZap baixado, mas houve erro ao instalar as dependencias locais.',
       };
     }
+
+    info('Dependencias instaladas com sucesso', {
+      metadata: { area: 'clonarRepositorio', dirPath },
+    });
 
     reportProgress('Aplicando configuracoes locais (.env e banco base)...', 'sync_configs', {
       percent: 75,

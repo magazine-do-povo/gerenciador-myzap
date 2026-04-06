@@ -125,9 +125,28 @@ function wait(ms) {
   });
 }
 
-async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500) {
+async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options = {}) {
   const inicio = Date.now();
+  const getChildError = options.getChildError || (() => null);
+  const isChildAlive = options.isChildAlive || (() => true);
+
   async function verificarNovamente() {
+    // Falhar rapido se o child process ja morreu com erro
+    const childErr = getChildError();
+    if (childErr) {
+      info('aguardarPorta: child process finalizou com erro, abortando espera', {
+        metadata: { area: 'iniciarMyZap', porta, error: childErr.message },
+      });
+      return false;
+    }
+
+    if (!isChildAlive()) {
+      info('aguardarPorta: child process nao esta mais ativo, abortando espera', {
+        metadata: { area: 'iniciarMyZap', porta },
+      });
+      return false;
+    }
+
     const [portaAtiva, httpAtivo] = await Promise.all([
       isPortInUse(porta),
       isLocalHttpServiceReachable({ timeoutMs: Math.min(intervalMs, 3000) }),
@@ -137,8 +156,19 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500) {
       return true;
     }
 
-    if (Date.now() - inicio >= timeoutMs) {
+    const elapsed = Date.now() - inicio;
+    if (elapsed >= timeoutMs) {
+      warn('aguardarPorta: timeout atingido esperando porta', {
+        metadata: { area: 'iniciarMyZap', porta, elapsed, timeoutMs },
+      });
       return false;
+    }
+
+    // Log periodico a cada 15 segundos para acompanhamento
+    if (elapsed > 0 && elapsed % 15000 < intervalMs) {
+      info(`aguardarPorta: ainda aguardando porta ${porta} (${Math.round(elapsed / 1000)}s/${Math.round(timeoutMs / 1000)}s)`, {
+        metadata: { area: 'iniciarMyZap', porta, elapsed, timeoutMs },
+      });
     }
 
     await wait(intervalMs);
@@ -154,6 +184,10 @@ async function iniciarMyZap(dirPath, options = {}) {
       ? options.onProgress
       : () => {};
     const porta = 5555;
+
+    info('=== Iniciando fluxo de start do MyZap ===', {
+      metadata: { area: 'iniciarMyZap', dirPath, porta },
+    });
 
     transition('starting_service', { message: 'Validando se o MyZap ja esta em execucao...', dirPath });
 
@@ -213,11 +247,23 @@ async function iniciarMyZap(dirPath, options = {}) {
 
     const startRunner = resolveDirectMyZapStartRunner(dirPath) || await getPnpmCommand();
     if (!startRunner) {
+      logError('Nenhum runner disponivel para iniciar MyZap (nem direct-node nem pnpm/npm)', {
+        metadata: { area: 'iniciarMyZap', dirPath },
+      });
       return {
         status: 'error',
         message: 'Nao foi possivel carregar o executor interno de inicializacao do MyZap.',
       };
     }
+
+    info(`Runner selecionado para iniciar MyZap: ${startRunner.source || startRunner.command}`, {
+      metadata: {
+        area: 'iniciarMyZap',
+        source: startRunner.source,
+        command: startRunner.command,
+        dirPath,
+      },
+    });
 
     reportProgress('Subindo processo local do MyZap...', 'run_start', {
       percent: 93,
@@ -237,6 +283,16 @@ async function iniciarMyZap(dirPath, options = {}) {
 
     // Rastrear child process para kill posterior
     myzapChildProcess = child;
+
+    info('Child process do MyZap criado', {
+      metadata: {
+        area: 'iniciarMyZap',
+        pid: child.pid,
+        command: startRunner.command,
+        args: childArgs,
+        dirPath,
+      },
+    });
 
     child.stdout.on('data', (data) => {
       info('MyZap runtime stdout', {
@@ -263,9 +319,15 @@ async function iniciarMyZap(dirPath, options = {}) {
 
     child.on('error', (err) => {
       childError = err;
+      logError('Erro ao criar/executar child process do MyZap', {
+        metadata: { area: 'iniciarMyZap', error: err.message, pid: child.pid },
+      });
     });
 
     child.on('exit', (code, signal) => {
+      info('Child process do MyZap finalizou', {
+        metadata: { area: 'iniciarMyZap', exitCode: code, signal, pid: child.pid },
+      });
       if (typeof code === 'number' && code !== 0) {
         // Extrair primeira linha util do stderr (sem stack trace)
         const firstLine = stderrOutput
@@ -289,7 +351,10 @@ async function iniciarMyZap(dirPath, options = {}) {
       dirPath,
       porta,
     });
-    const abriuPorta = await aguardarPorta(porta, 180000, 1500);
+    const abriuPorta = await aguardarPorta(porta, 180000, 1500, {
+      getChildError: () => childError,
+      isChildAlive: () => myzapChildProcess !== null,
+    });
 
     if (!abriuPorta) {
       transition('error', {

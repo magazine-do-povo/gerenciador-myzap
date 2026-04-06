@@ -3,6 +3,7 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
+const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger');
 
 const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
 
@@ -531,60 +532,163 @@ function refreshPathWindows() {
   } catch (_err) { /* melhor esforco */ }
 }
 
+/**
+ * Valida se um comando encontrado realmente funciona executando --version.
+ * Retorna true se o comando executou com sucesso, false caso contrario.
+ */
+function validateCommand(commandPath, args = ['--version']) {
+  try {
+    const result = spawnSync(commandPath, args, {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      timeout: 10000,
+    });
+    const ok = !result.error && result.status === 0;
+    const version = String(result.stdout || '').trim().split('\n')[0];
+    logDebug(`Validacao de comando: ${commandPath}`, {
+      metadata: {
+        area: 'processUtils',
+        commandPath,
+        ok,
+        version: ok ? version : undefined,
+        error: result.error ? result.error.message : undefined,
+        exitCode: result.status,
+      },
+    });
+    return ok;
+  } catch (err) {
+    logWarn(`Falha ao validar comando: ${commandPath}`, {
+      metadata: { area: 'processUtils', commandPath, error: err.message },
+    });
+    return false;
+  }
+}
+
 async function getPnpmCommand() {
+  logInfo('Iniciando deteccao do gerenciador de pacotes (pnpm/npm)...', {
+    metadata: { area: 'processUtils', fase: 'getPnpmCommand' },
+  });
+
   const bundledRunner = getBundledPnpmCommand();
   if (bundledRunner) {
+    logInfo('Usando pnpm empacotado (bundled)', {
+      metadata: { area: 'processUtils', source: 'bundled-pnpm' },
+    });
     return bundledRunner;
   }
+  logDebug('pnpm empacotado nao disponivel', { metadata: { area: 'processUtils' } });
 
   if (isElectronPackagedApp()) {
+    logWarn('App empacotado sem pnpm bundled — nenhum runner disponivel', {
+      metadata: { area: 'processUtils' },
+    });
     return null;
+  }
+
+  // Atualizar PATH no Windows antes de buscar comandos
+  if (os.platform() === 'win32') {
+    refreshPathWindows();
+    logDebug('PATH do Windows atualizado via registro', { metadata: { area: 'processUtils' } });
   }
 
   const pnpmPath = await resolveCommandPath('pnpm');
   if (pnpmPath) {
-    return {
-      command: pnpmPath,
-      prefixArgs: [],
-      shell: false,
-      env: process.env,
-      source: 'system-pnpm',
-    };
+    if (validateCommand(pnpmPath, ['--version'])) {
+      logInfo('pnpm do sistema detectado e validado', {
+        metadata: { area: 'processUtils', source: 'system-pnpm', path: pnpmPath },
+      });
+      return {
+        command: pnpmPath,
+        prefixArgs: [],
+        shell: false,
+        env: process.env,
+        source: 'system-pnpm',
+      };
+    }
+    logWarn('pnpm encontrado no PATH mas falhou na validacao (--version)', {
+      metadata: { area: 'processUtils', path: pnpmPath },
+    });
+  } else {
+    logDebug('pnpm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
   // npx vem com o npm e e a forma mais comum de rodar pnpm sem instalar globalmente
   const npxPath = await resolveCommandPath('npx');
   if (npxPath) {
-    return {
-      command: npxPath,
-      prefixArgs: ['pnpm'],
-      shell: false,
-      env: process.env,
-      source: 'system-npx',
-    };
+    if (validateCommand(npxPath, ['--version'])) {
+      logInfo('npx do sistema detectado e validado (sera usado para rodar pnpm)', {
+        metadata: { area: 'processUtils', source: 'system-npx', path: npxPath },
+      });
+      return {
+        command: npxPath,
+        prefixArgs: ['pnpm'],
+        shell: false,
+        env: process.env,
+        source: 'system-npx',
+      };
+    }
+    logWarn('npx encontrado no PATH mas falhou na validacao', {
+      metadata: { area: 'processUtils', path: npxPath },
+    });
+  } else {
+    logDebug('npx nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
   // npm disponivel mas npx nao (npm < 5.2) — tenta via npm exec
   const npmPath = await resolveCommandPath('npm');
   if (npmPath) {
-    return {
-      command: npmPath,
-      prefixArgs: ['exec', 'pnpm', '--'],
-      shell: false,
-      env: process.env,
-      source: 'system-npm-exec',
-    };
+    if (validateCommand(npmPath, ['--version'])) {
+      logInfo('npm do sistema detectado e validado (sera usado via npm exec pnpm)', {
+        metadata: { area: 'processUtils', source: 'system-npm-exec', path: npmPath },
+      });
+      return {
+        command: npmPath,
+        prefixArgs: ['exec', 'pnpm', '--'],
+        shell: false,
+        env: process.env,
+        source: 'system-npm-exec',
+      };
+    }
+    logWarn('npm encontrado no PATH mas falhou na validacao', {
+      metadata: { area: 'processUtils', path: npmPath },
+    });
+  } else {
+    logDebug('npm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
+  logWarn('Nenhum gerenciador de pacotes (pnpm/npx/npm) encontrado ou funcional no sistema', {
+    metadata: { area: 'processUtils', platform: os.platform() },
+  });
   return null;
 }
 
 async function getGitCommand() {
+  logDebug('Verificando disponibilidade do git...', { metadata: { area: 'processUtils' } });
+
+  // Atualizar PATH no Windows antes de buscar git
+  if (os.platform() === 'win32') {
+    refreshPathWindows();
+  }
+
   const gitPath = await resolveCommandPath('git');
   if (!gitPath) {
+    logInfo('Git nao encontrado no PATH do sistema', {
+      metadata: { area: 'processUtils', platform: os.platform() },
+    });
     return null;
   }
 
+  if (!validateCommand(gitPath, ['--version'])) {
+    logWarn('Git encontrado no PATH mas falhou na validacao (--version)', {
+      metadata: { area: 'processUtils', path: gitPath },
+    });
+    return null;
+  }
+
+  logInfo('Git detectado e validado', {
+    metadata: { area: 'processUtils', source: 'system-git', path: gitPath },
+  });
   return {
     command: gitPath,
     prefixArgs: [],

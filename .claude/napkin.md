@@ -9,9 +9,15 @@
 
 ## Execution & Validation (Highest Priority)
 
-1. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
+1. **[2026-04-06] Validar comandos encontrados no PATH com --version antes de usar**
+   Do instead: apos `resolveCommandPath`, rodar `spawnSync(cmd, ['--version'])` e descartar se falhar. Evita falso positivo de PATH stale.
+2. **[2026-04-06] aguardarPorta deve abortar se child process ja morreu**
+   Do instead: passar `getChildError` e `isChildAlive` como callbacks para `aguardarPorta`; verificar a cada iteracao e retornar false imediatamente se o child finalizou.
+3. **[2026-04-06] Refresh PATH do Windows antes de resolver comandos**
+   Do instead: chamar `refreshPathWindows()` no inicio de `getPnpmCommand` e `getGitCommand` em win32 para ler PATH atualizado do registro.
+4. **[2026-03-16] Bootstrap local do MyZap nao deve depender de Git ou Node globais**
    Do instead: baixar o pacote oficial do MyZap via arquivo compactado e executar o `pnpm` com o runtime do proprio app.
-2. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
+5. **[2026-03-16] CLI do `pnpm` empacotado precisa sobreviver ao asar**
    Do instead: manter `node_modules/pnpm/**` em `asarUnpack` e resolver o caminho com fallback para `app.asar.unpacked`.
 
 ## Shell & Command Reliability
