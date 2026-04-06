@@ -6,12 +6,71 @@ const extractZip = require('extract-zip');
 const { info, warn, error } = require('./myzapLogger');
 
 const MAX_REDIRECTS = 5;
-const PORTABLE_NODE_VERSION = '20.11.1';
+const MINIMUM_NODE_VERSION = '20.18.1';
+const PORTABLE_NODE_VERSION = '20.20.2';
+const SYSTEM_NODE_VERSION = '20.20.2';
 const PORTABLE_GIT_VERSION = '2.45.1';
+const SYSTEM_GIT_VERSION = '2.45.1';
 const PORTABLE_GIT_RELEASE_TAG = 'v2.45.1.windows.1';
+const SYSTEM_GIT_RELEASE_TAG = 'v2.45.1.windows.1';
 
 let portableNodeInFlight = null;
 let portableGitInFlight = null;
+
+function normalizeVersion(version) {
+  return String(version || '')
+    .trim()
+    .replace(/^v/i, '')
+    .split('-')[0];
+}
+
+function compareVersions(leftVersion, rightVersion) {
+  const left = normalizeVersion(leftVersion).split('.').map((part) => Number(part) || 0);
+  const right = normalizeVersion(rightVersion).split('.').map((part) => Number(part) || 0);
+  const maxLength = Math.max(left.length, right.length, 3);
+
+  for (let idx = 0; idx < maxLength; idx += 1) {
+    const leftPart = left[idx] || 0;
+    const rightPart = right[idx] || 0;
+    if (leftPart > rightPart) return 1;
+    if (leftPart < rightPart) return -1;
+  }
+
+  return 0;
+}
+
+function isNodeVersionCompatible(version) {
+  const normalized = normalizeVersion(version);
+  if (!normalized) {
+    return false;
+  }
+
+  return compareVersions(normalized, MINIMUM_NODE_VERSION) >= 0;
+}
+
+function readNodeVersion(nodePath) {
+  if (!nodePath || !fs.existsSync(nodePath)) {
+    return '';
+  }
+
+  try {
+    const { spawnSync } = require('child_process');
+    const result = spawnSync(nodePath, ['--version'], {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      timeout: 5000,
+    });
+
+    if (result.error || result.status !== 0) {
+      return '';
+    }
+
+    return normalizeVersion(String(result.stdout || '').trim());
+  } catch (_err) {
+    return '';
+  }
+}
 
 function writeDebugLog(debugLog, message, metadata = {}) {
   if (!debugLog || typeof debugLog.log !== 'function') {
@@ -60,7 +119,7 @@ function resolvePortableNodePathFromBase(baseDir) {
 
   const expectedDir = path.join(baseDir, `node-v${PORTABLE_NODE_VERSION}-win-${getPortableWindowsArch()}`);
   const expectedPath = path.join(expectedDir, 'node.exe');
-  if (fs.existsSync(expectedPath)) {
+  if (fs.existsSync(expectedPath) && isNodeVersionCompatible(readNodeVersion(expectedPath))) {
     return expectedPath;
   }
 
@@ -69,11 +128,21 @@ function resolvePortableNodePathFromBase(baseDir) {
     .map((entry) => entry.name)
     .filter((name) => /^node-v.+-win-(x64|x86)$/i.test(name));
 
-  for (const entryName of entries) {
-    const candidate = path.join(baseDir, entryName, 'node.exe');
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
+  const compatibleCandidates = entries
+    .map((entryName) => ({
+      entryName,
+      candidate: path.join(baseDir, entryName, 'node.exe'),
+    }))
+    .filter((entry) => fs.existsSync(entry.candidate))
+    .map((entry) => ({
+      ...entry,
+      version: readNodeVersion(entry.candidate),
+    }))
+    .filter((entry) => isNodeVersionCompatible(entry.version))
+    .sort((left, right) => compareVersions(right.version, left.version));
+
+  if (compatibleCandidates.length > 0) {
+    return compatibleCandidates[0].candidate;
   }
 
   return null;
@@ -372,6 +441,12 @@ async function ensurePortableGitRuntime(options = {}) {
 }
 
 module.exports = {
+  MINIMUM_NODE_VERSION,
+  SYSTEM_NODE_VERSION,
+  SYSTEM_GIT_VERSION,
+  SYSTEM_GIT_RELEASE_TAG,
+  isNodeVersionCompatible,
+  readNodeVersion,
   getPortableToolsBaseDir,
   getPortableNodePath,
   getPortableGitPath,

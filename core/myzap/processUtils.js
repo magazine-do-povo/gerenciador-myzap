@@ -5,10 +5,11 @@ const path = require('path');
 const fs = require('fs');
 const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger');
 const {
+  MINIMUM_NODE_VERSION,
   getPortableNodePath,
   getPortableGitPath,
-  ensurePortableNodeRuntime,
-  ensurePortableGitRuntime,
+  isNodeVersionCompatible,
+  readNodeVersion,
 } = require('./runtimeTools');
 
 const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
@@ -48,24 +49,18 @@ function buildCleanEnvForChild() {
 /** Cache do caminho do Node.js real (evita buscar repetidamente) */
 let _cachedSystemNodePath = undefined;
 
-/**
- * Tenta encontrar o Node.js real do sistema (nao o binario do Electron).
- * Retorna o path absoluto ou null se nao encontrado.
- */
-function findSystemNodePath() {
-  if (_cachedSystemNodePath !== undefined) return _cachedSystemNodePath;
+function resetSystemNodePathCache() {
+  _cachedSystemNodePath = undefined;
+}
 
+function findInstalledSystemNodePath() {
   const isWin = os.platform() === 'win32';
+  const checker = isWin ? 'where' : 'which';
+  const electronBin = process.execPath.toLowerCase();
 
-  // Atualizar PATH do Windows via registro ANTES de buscar node.
-  // Sem isso, o Electron pode herdar um PATH defasado do Explorer
-  // e nao encontrar o Node.js instalado pelo usuario.
   if (isWin) {
     refreshPathWindows();
   }
-
-  const checker = isWin ? 'where' : 'which';
-  const electronBin = process.execPath.toLowerCase();
 
   try {
     const result = spawnSync(checker, ['node'], {
@@ -78,62 +73,58 @@ function findSystemNodePath() {
     if (!result.error && result.status === 0) {
       const candidates = String(result.stdout || '')
         .split(/\r?\n/)
-        .map((l) => l.trim())
+        .map((line) => line.trim())
         .filter(Boolean);
 
       for (const candidate of candidates) {
         if (candidate.toLowerCase() === electronBin) continue;
-        const check = spawnSync(candidate, ['--version'], {
-          encoding: 'utf8',
-          shell: false,
-          windowsHide: true,
-          timeout: 5000,
-        });
-        if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
-          logInfo('Node.js real do sistema encontrado via PATH', {
-            metadata: { area: 'processUtils', nodePath: candidate, version: String(check.stdout).trim() },
-          });
-          _cachedSystemNodePath = candidate;
+        const version = readNodeVersion(candidate);
+        if (isNodeVersionCompatible(version)) {
           return candidate;
         }
       }
     }
   } catch (_err) { /* melhor esforco */ }
 
-  // Fallback: verificar caminhos conhecidos de instalacao no Windows
   if (isWin) {
     const knownPath = getKnownCommandPath('node');
     if (knownPath && knownPath.toLowerCase() !== electronBin) {
-      const check = spawnSync(knownPath, ['--version'], {
-        encoding: 'utf8',
-        shell: false,
-        windowsHide: true,
-        timeout: 5000,
-      });
-      if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
-        logInfo('Node.js real encontrado em caminho conhecido do Windows', {
-          metadata: { area: 'processUtils', nodePath: knownPath, version: String(check.stdout).trim() },
-        });
-        _cachedSystemNodePath = knownPath;
+      const version = readNodeVersion(knownPath);
+      if (isNodeVersionCompatible(version)) {
         return knownPath;
       }
     }
+  }
 
-    const portableNodePath = getPortableNodePath();
-    if (portableNodePath && portableNodePath.toLowerCase() !== electronBin) {
-      const check = spawnSync(portableNodePath, ['--version'], {
-        encoding: 'utf8',
-        shell: false,
-        windowsHide: true,
-        timeout: 5000,
+  return null;
+}
+
+/**
+ * Tenta encontrar o Node.js real do sistema (nao o binario do Electron).
+ * Retorna o path absoluto ou null se nao encontrado.
+ */
+function findSystemNodePath() {
+  if (_cachedSystemNodePath !== undefined) return _cachedSystemNodePath;
+
+  const systemNodePath = findInstalledSystemNodePath();
+  if (systemNodePath) {
+    logInfo('Node.js do sistema compativel encontrado', {
+      metadata: { area: 'processUtils', nodePath: systemNodePath, version: readNodeVersion(systemNodePath) },
+    });
+    _cachedSystemNodePath = systemNodePath;
+    return systemNodePath;
+  }
+
+  const electronBin = process.execPath.toLowerCase();
+  const portableNodePath = getPortableNodePath();
+  if (portableNodePath && portableNodePath.toLowerCase() !== electronBin) {
+    const version = readNodeVersion(portableNodePath);
+    if (isNodeVersionCompatible(version)) {
+      logInfo('Node.js portatil do gerenciador encontrado', {
+        metadata: { area: 'processUtils', nodePath: portableNodePath, version },
       });
-      if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
-        logInfo('Node.js portatil do gerenciador encontrado', {
-          metadata: { area: 'processUtils', nodePath: portableNodePath, version: String(check.stdout).trim() },
-        });
-        _cachedSystemNodePath = portableNodePath;
-        return portableNodePath;
-      }
+      _cachedSystemNodePath = portableNodePath;
+      return portableNodePath;
     }
   }
 
@@ -721,26 +712,6 @@ async function getPnpmCommand() {
     return bundledRunner;
   }
 
-  if (os.platform() === 'win32' && !findSystemNodePath()) {
-    try {
-      const portableNode = await ensurePortableNodeRuntime();
-      if (portableNode && portableNode.path) {
-        _cachedSystemNodePath = portableNode.path;
-        bundledRunner = getBundledPnpmCommand();
-        if (bundledRunner) {
-          logInfo('Usando pnpm empacotado com Node.js portatil do gerenciador', {
-            metadata: { area: 'processUtils', nodePath: portableNode.path },
-          });
-          return bundledRunner;
-        }
-      }
-    } catch (err) {
-      logWarn('Falha ao baixar/preparar Node.js portatil do gerenciador', {
-        metadata: { area: 'processUtils', error: err.message },
-      });
-    }
-  }
-
   logDebug('pnpm empacotado nao disponivel', { metadata: { area: 'processUtils' } });
 
   if (isElectronPackagedApp()) {
@@ -821,26 +792,6 @@ async function getPnpmCommand() {
     logDebug('npm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
-  if (os.platform() === 'win32') {
-    try {
-      const portableNode = await ensurePortableNodeRuntime();
-      if (portableNode && portableNode.path) {
-        _cachedSystemNodePath = portableNode.path;
-        bundledRunner = getBundledPnpmCommand();
-        if (bundledRunner) {
-          logInfo('Fallback final: usando pnpm empacotado com Node.js portatil', {
-            metadata: { area: 'processUtils', nodePath: portableNode.path },
-          });
-          return bundledRunner;
-        }
-      }
-    } catch (err) {
-      logWarn('Falha no fallback do Node.js portatil ao obter pnpm', {
-        metadata: { area: 'processUtils', error: err.message },
-      });
-    }
-  }
-
   logWarn('Nenhum gerenciador de pacotes (pnpm/npx/npm) encontrado ou funcional no sistema', {
     metadata: { area: 'processUtils', platform: os.platform() },
   });
@@ -849,17 +800,29 @@ async function getPnpmCommand() {
 
 async function getGitCommand() {
   logDebug('Verificando disponibilidade do git...', { metadata: { area: 'processUtils' } });
+  const systemGit = await getSystemGitCommand();
+  if (systemGit) {
+    logInfo('Git detectado e validado', {
+      metadata: { area: 'processUtils', source: 'system-git', path: systemGit.command },
+    });
+    return systemGit;
+  }
 
-  // Atualizar PATH no Windows antes de buscar git
+  logInfo('Git do sistema nao encontrado ou invalido', {
+    metadata: { area: 'processUtils', platform: os.platform() },
+  });
+  return null;
+}
+
+async function getSystemGitCommand() {
+  logDebug('Verificando disponibilidade do git do sistema...', { metadata: { area: 'processUtils' } });
+
   if (os.platform() === 'win32') {
     refreshPathWindows();
   }
 
   const gitPath = await resolveCommandPath('git');
   if (gitPath && validateCommand(gitPath, ['--version'])) {
-    logInfo('Git detectado e validado', {
-      metadata: { area: 'processUtils', source: 'system-git', path: gitPath },
-    });
     return {
       command: gitPath,
       prefixArgs: [],
@@ -869,51 +832,6 @@ async function getGitCommand() {
     };
   }
 
-  if (gitPath) {
-    logWarn('Git encontrado no PATH mas falhou na validacao (--version)', {
-      metadata: { area: 'processUtils', path: gitPath },
-    });
-  }
-
-  const portableGitPath = getPortableGitPath();
-  if (portableGitPath && validateCommand(portableGitPath, ['--version'])) {
-    logInfo('Git portatil do gerenciador detectado e validado', {
-      metadata: { area: 'processUtils', source: 'portable-git', path: portableGitPath },
-    });
-    return {
-      command: portableGitPath,
-      prefixArgs: [],
-      shell: false,
-      env: buildCleanEnvForChild(),
-      source: 'portable-git',
-    };
-  }
-
-  if (os.platform() === 'win32') {
-    try {
-      const portableGit = await ensurePortableGitRuntime();
-      if (portableGit && portableGit.path && validateCommand(portableGit.path, ['--version'])) {
-        logInfo('Git portatil baixado e validado com sucesso', {
-          metadata: { area: 'processUtils', source: 'portable-git', path: portableGit.path },
-        });
-        return {
-          command: portableGit.path,
-          prefixArgs: [],
-          shell: false,
-          env: buildCleanEnvForChild(),
-          source: 'portable-git',
-        };
-      }
-    } catch (err) {
-      logWarn('Falha ao baixar/preparar Git portatil do gerenciador', {
-        metadata: { area: 'processUtils', error: err.message },
-      });
-    }
-  }
-
-  logInfo('Git nao encontrado no PATH nem no cache portatil do gerenciador', {
-    metadata: { area: 'processUtils', platform: os.platform() },
-  });
   return null;
 }
 
@@ -927,7 +845,10 @@ module.exports = {
   resolveCommandPath,
   getPnpmCommand,
   getGitCommand,
+  getSystemGitCommand,
   refreshPathWindows,
   findSystemNodePath,
+  findInstalledSystemNodePath,
+  resetSystemNodePathCache,
   buildCleanEnvForChild,
 };

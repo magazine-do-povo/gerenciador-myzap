@@ -5,13 +5,14 @@ const {
   killProcessesOnPort,
   getPnpmCommand,
   findSystemNodePath,
+  findInstalledSystemNodePath,
+  resetSystemNodePathCache,
+  refreshPathWindows,
+  getSystemGitCommand,
   getPrivilegeStatus,
   buildAdminRequiredMessage,
 } = require('./processUtils');
-const {
-  ensurePortableNodeRuntime,
-  ensurePortableGitRuntime,
-} = require('./runtimeTools');
+const { ensureSystemNodeInstalled, ensureSystemGitInstalled } = require('./systemToolInstaller');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
@@ -35,9 +36,12 @@ function getCommandFailureDetail(commandResult) {
     .map((line) => line.trim())
     .filter(Boolean)
     .filter((line) => !/^>/i.test(line))
-    .filter((line) => !/^at\s+/i.test(line));
+    .filter((line) => !/^at\s+/i.test(line))
+    .filter((line) => !/^Lockfile is up to date/i.test(line));
 
-  const detail = lines.find(Boolean) || '';
+  const detail = lines.find((line) => /ERR_PNPM|npm ERR!|unsupported|error|failed/i.test(line))
+    || lines.find(Boolean)
+    || '';
   return detail.slice(0, 220);
 }
 
@@ -237,41 +241,73 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       dirPath,
     });
 
-    try {
-      await ensurePortableGitRuntime({ onProgress: reportProgress, debugLog });
-    } catch (gitRuntimeErr) {
-      warn('Nao foi possivel preparar o Git interno. O fluxo continuara e usara ZIP para instalacao.', {
-        metadata: {
-          area: 'clonarRepositorio',
-          dirPath,
-          error: getErrorMessage(gitRuntimeErr),
-        },
-      });
-    }
-
-    try {
-      await ensurePortableNodeRuntime({ onProgress: reportProgress, debugLog });
-    } catch (nodeRuntimeErr) {
-      if (!findSystemNodePath()) {
-        logError('Falha ao preparar Node.js interno e nenhum Node.js compativel foi encontrado no sistema.', {
+    const currentSystemNode = findInstalledSystemNodePath();
+    if (!currentSystemNode && process.platform === 'win32') {
+      try {
+        await ensureSystemNodeInstalled({ onProgress: reportProgress, debugLog });
+        resetSystemNodePathCache();
+        refreshPathWindows();
+      } catch (nodeInstallErr) {
+        logError('Falha ao instalar Node.js normal para o MyZap.', {
           metadata: {
             area: 'clonarRepositorio',
             dirPath,
-            error: getErrorMessage(nodeRuntimeErr),
+            error: getErrorMessage(nodeInstallErr),
           },
         });
         return attachDebugLog({
           status: 'error',
-          message: 'Nao foi possivel preparar o runtime interno do Node.js para instalar o MyZap. Verifique sua conexao com a internet e tente novamente.',
+          message: `Nao foi possivel instalar o Node.js necessario para o MyZap: ${getErrorMessage(nodeInstallErr)}`,
         }, debugLog);
       }
+    }
 
-      warn('Falha ao preparar Node.js interno, mas um Node.js compativel ja existe no sistema. Continuando com o runtime do sistema.', {
-        metadata: {
-          area: 'clonarRepositorio',
-          dirPath,
-          error: getErrorMessage(nodeRuntimeErr),
-        },
+    const confirmedSystemNode = findInstalledSystemNodePath();
+    if (!confirmedSystemNode) {
+      return attachDebugLog({
+        status: 'error',
+        message: 'Node.js compativel nao foi encontrado nem instalado. A instalacao do MyZap foi interrompida.',
+      }, debugLog);
+    }
+
+    if (process.platform === 'win32') {
+      const gitRunnerBeforeInstall = await getSystemGitCommand();
+      if (!gitRunnerBeforeInstall) {
+        try {
+          await ensureSystemGitInstalled({ onProgress: reportProgress, debugLog });
+          refreshPathWindows();
+        } catch (gitInstallErr) {
+          warn('Nao foi possivel instalar o Git normal no Windows. O MyZap continuara sem atualizacao via git.', {
+            metadata: {
+              area: 'clonarRepositorio',
+              dirPath,
+              error: getErrorMessage(gitInstallErr),
+            },
+          });
+          if (debugLog && typeof debugLog.log === 'function') {
+            debugLog.log('Falha ao instalar Git normal, seguindo sem git', {
+              error: getErrorMessage(gitInstallErr),
+            });
+          }
+        }
+      }
+    }
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Node.js compativel confirmado antes do pnpm install', {
+        nodePath: confirmedSystemNode,
+      });
+    }
+
+    if (confirmedSystemNode && debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Git/Node do sistema preparados para instalacao do MyZap', {
+        nodePath: confirmedSystemNode,
+      });
+    }
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Preparacao de dependencias do sistema concluida', {
+        nodePath: confirmedSystemNode,
       });
     }
 
