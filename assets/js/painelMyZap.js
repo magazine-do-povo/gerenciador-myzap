@@ -60,7 +60,7 @@ let currentPrivilegeStatus = {
   message: ''
 };
 const QR_POLL_INTERVAL_MS = 3000;
-const QR_POLL_MAX_ATTEMPTS = 40; // ~120s total
+const QR_POLL_MAX_ATTEMPTS = 100; // ~300s (5 min) - Chrome pode demorar para inicializar
 
 const CAPABILITY_FIELD_IDS = {
   supportsIaConfig: 'capability-ia-config-mode',
@@ -1213,6 +1213,21 @@ async function tickQrPolling() {
           '<div class="qrcode-hint">Escaneie o QR Code com o WhatsApp</div>';
         setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
       }
+    } else {
+      // Sem QR ainda - mostrar feedback de progresso baseado no status
+      var feedbackStatus = sessionStatus || '';
+      if (snapshot && snapshot.raw && snapshot.raw.connection) {
+        feedbackStatus = feedbackStatus || (snapshot.raw.connection.status || snapshot.raw.connection.state || '').toLowerCase();
+      }
+      var isInitializing = feedbackStatus === 'initializing' || feedbackStatus === 'starting' || feedbackStatus === 'reconnecting' || feedbackStatus === 'loading';
+      if (isInitializing) {
+        statusIndicator.className = 'status-indicator waiting';
+        statusIndicator.textContent = 'Inicializando navegador... (' + qrPollingAttempts + '/' + QR_POLL_MAX_ATTEMPTS + ')';
+        if (!qrBox.querySelector('.initializing-feedback')) {
+          qrBox.innerHTML = '<div class="initializing-feedback"><span class="spinner-border spinner-border-sm" role="status"></span> ' +
+            'Aguardando Chrome/WhatsApp inicializar. Isso pode levar alguns minutos na primeira vez...</div>';
+        }
+      }
     }
   } catch (err) {
     console.warn('[MyZap UI] tickQrPolling: erro transiente', err && err.message ? err.message : err);
@@ -1286,21 +1301,34 @@ async function iniciarSessao() {
     statusIndicator.textContent = 'Iniciando sessao...';
 
     qrBox.innerHTML = `
-      <span class="text-muted-small">
-        Criando sessao no MyZap, aguarde...
-      </span>
+      <div class="initializing-feedback">
+        <span class="spinner-border spinner-border-sm" role="status"></span>
+        Iniciando sessao e aguardando QR Code. Isso pode levar alguns minutos...
+      </div>
     `;
 
     const response = await window.api.startSession();
     console.log('[MyZap UI] startSession resposta:', JSON.stringify(response));
 
-    if (!response || response.result !== 'success') {
+    if (!response || (response.result !== 'success' && response.result !== 200)) {
       throw new Error('Sem resposta do MyZap. Verifique se o servico esta rodando (porta 5555).');
     }
 
     setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
 
-    // Se o start ja retornou QR code (waitQrCode: true), exibir imediatamente
+    // Verificar se sessao conectou durante espera interna do startSession
+    var startStatus = (response.session_status || response.status || '').toString().toUpperCase();
+    if (startStatus === 'CONNECTED') {
+      console.log('[MyZap UI] Sessao conectou durante startSession');
+      statusIndicator.className = 'status-indicator connected';
+      statusIndicator.textContent = 'Conectado';
+      qrBox.innerHTML = '<span class="text-muted-small">WhatsApp conectado com sucesso</span>';
+      setButtonsState({ canStart: false, canDelete: true, canSendTest: true });
+      setIaConfigVisibility(true);
+      return;
+    }
+
+    // Se o start retornou QR code (polling interno encontrou), exibir imediatamente
     const qrFromStart = response.qrCode || response.qr_code || response.qrcode || response.base64Qrimg || response.urlCode || '';
     if (qrFromStart) {
       console.log('[MyZap UI] QR code recebido direto do startSession');
