@@ -972,7 +972,7 @@ async function checkRealConnection() {
 
     if (isQrWaiting) {
       statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = 'â³ Aguardando leitura do QR Code';
+      statusIndicator.textContent = '⏳ Aguardando leitura do QR Code';
 
       setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
       setIaConfigVisibility(false);
@@ -980,11 +980,21 @@ async function checkRealConnection() {
     }
 
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âŒ Desconectado';
+    statusIndicator.textContent = '❌ Desconectado';
 
+    // Traduzir mensagem tecnica da API para algo amigavel
+    var displayMessage = 'QR Code nao disponivel';
+    if (message) {
+      var msgLower = String(message).toLowerCase();
+      if (msgLower.includes('client') && (msgLower.includes('memoria') || msgLower.includes('mem\u00f3ria'))) {
+        displayMessage = 'Sessao nao iniciada. Clique em "Iniciar instancia" para comecar.';
+      } else {
+        displayMessage = message;
+      }
+    }
     qrBox.innerHTML = `
       <span class="text-muted-small">
-        ${message || 'QR Code nao disponivel'}
+        ${displayMessage}
       </span>
     `;
 
@@ -1054,7 +1064,7 @@ async function checkConnection() {
 
     if ((state === 'QRCODE' || status === 'qrCode') && qrCode) {
       statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = 'â³ Aguardando leitura do QR Code';
+      statusIndicator.textContent = '⏳ Aguardando leitura do QR Code';
 
       qrBox.innerHTML = `
         <img
@@ -1219,7 +1229,11 @@ async function tickQrPolling() {
       if (snapshot && snapshot.raw && snapshot.raw.connection) {
         feedbackStatus = feedbackStatus || (snapshot.raw.connection.status || snapshot.raw.connection.state || '').toLowerCase();
       }
-      var isInitializing = feedbackStatus === 'initializing' || feedbackStatus === 'starting' || feedbackStatus === 'reconnecting' || feedbackStatus === 'loading';
+      // Durante o boot do MyZap, "Client nao esta na memoria" retorna not_found/disconnected.
+      // Enquanto o polling estiver ativo, tratar esses status como "inicializando" tambem.
+      var isInitializing = feedbackStatus === 'initializing' || feedbackStatus === 'starting'
+        || feedbackStatus === 'reconnecting' || feedbackStatus === 'loading'
+        || feedbackStatus === 'not_found' || feedbackStatus === 'disconnected';
       if (isInitializing) {
         statusIndicator.className = 'status-indicator waiting';
         statusIndicator.textContent = 'Inicializando navegador... (' + qrPollingAttempts + '/' + QR_POLL_MAX_ATTEMPTS + ')';
@@ -1349,7 +1363,7 @@ async function iniciarSessao() {
     console.error('Erro ao iniciar sessao:', err);
 
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âŒ Erro ao iniciar sessÃ£o';
+    statusIndicator.textContent = '❌ Erro ao iniciar sessao';
 
     qrBox.innerHTML = `
       <span class="text-danger text-small">
@@ -1372,7 +1386,7 @@ async function deletarSessao() {
   const statusIndicator = document.querySelector('.status-indicator');
 
   try {
-    // 1ï¸âƒ£ Verifica se existe sessÃ£o
+    // 1. Verifica se existe sessao
     const realCheck = await checkRealConnection();
 
     if (!realCheck || (!realCheck.isConnected && !realCheck.isQrWaiting)) {
@@ -1383,7 +1397,7 @@ async function deletarSessao() {
       return;
     }
 
-    // 2ï¸âƒ£ Feedback visual
+    // 2. Feedback visual
     statusIndicator.className = 'status-indicator waiting';
     statusIndicator.textContent = 'Encerrando sessao...';
 
@@ -1393,16 +1407,16 @@ async function deletarSessao() {
       </span>
     `;
 
-    // 3ï¸âƒ£ Chamada de delete
+    // 3. Chamada de delete
     const response = await window.api.deleteSession();
 
     if (!response || response.status !== 'SUCCESS') {
       throw new Error('Falha ao deletar sessao');
     }
 
-    // 4ï¸âƒ£ UI final
+    // 4. UI final
     statusIndicator.className = 'status-indicator disconnected';
-    statusIndicator.textContent = 'âŒ SessÃ£o encerrada';
+    statusIndicator.textContent = '❌ Sessao encerrada';
 
     qrBox.innerHTML = `
       <span class="text-muted-small">
