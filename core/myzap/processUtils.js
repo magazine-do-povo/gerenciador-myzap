@@ -7,6 +7,68 @@ const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger
 
 const DEFAULT_LOCAL_HTTP_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];
 
+/**
+ * Cria um env limpo para child processes do MyZap.
+ * Remove ELECTRON_RUN_AS_NODE que contamina sub-processos (ex: Chrome/Puppeteer).
+ */
+function buildCleanEnvForChild() {
+  const env = { ...process.env };
+  delete env.ELECTRON_RUN_AS_NODE;
+  delete env.ELECTRON_NO_ASAR;
+  return env;
+}
+
+/** Cache do caminho do Node.js real (evita buscar repetidamente) */
+let _cachedSystemNodePath = undefined;
+
+/**
+ * Tenta encontrar o Node.js real do sistema (nao o binario do Electron).
+ * Retorna o path absoluto ou null se nao encontrado.
+ */
+function findSystemNodePath() {
+  if (_cachedSystemNodePath !== undefined) return _cachedSystemNodePath;
+
+  const isWin = os.platform() === 'win32';
+  const checker = isWin ? 'where' : 'which';
+
+  try {
+    const result = spawnSync(checker, ['node'], {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      timeout: 5000,
+    });
+
+    if (!result.error && result.status === 0) {
+      const candidates = String(result.stdout || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+      const electronBin = process.execPath.toLowerCase();
+      for (const candidate of candidates) {
+        if (candidate.toLowerCase() === electronBin) continue;
+        const check = spawnSync(candidate, ['--version'], {
+          encoding: 'utf8',
+          shell: false,
+          windowsHide: true,
+          timeout: 5000,
+        });
+        if (!check.error && check.status === 0 && String(check.stdout).trim().startsWith('v')) {
+          logInfo('Node.js real do sistema encontrado (processUtils)', {
+            metadata: { area: 'processUtils', nodePath: candidate, version: String(check.stdout).trim() },
+          });
+          _cachedSystemNodePath = candidate;
+          return candidate;
+        }
+      }
+    }
+  } catch (_err) { /* melhor esforco */ }
+
+  _cachedSystemNodePath = null;
+  return null;
+}
+
 function isPortInUse(port) {
   return new Promise((resolve) => {
     const server = net.createServer();
@@ -479,15 +541,28 @@ function getBundledPnpmCommand() {
       return null;
     }
 
+    // Preferir Node.js real do sistema se disponivel
+    const systemNode = findSystemNodePath();
+    if (systemNode) {
+      return {
+        command: systemNode,
+        prefixArgs: [cliPath],
+        shell: false,
+        env: buildCleanEnvForChild(),
+        source: 'bundled-pnpm',
+      };
+    }
+
+    // Fallback: usar binario do Electron como Node.js
     return {
       command: process.execPath,
       prefixArgs: [cliPath],
       shell: false,
       env: {
-        ...process.env,
+        ...buildCleanEnvForChild(),
         ELECTRON_RUN_AS_NODE: '1',
       },
-      source: 'bundled-pnpm',
+      source: 'bundled-pnpm-electron',
     };
   } catch (_err) {
     return null;
