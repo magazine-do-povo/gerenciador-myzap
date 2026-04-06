@@ -1,7 +1,7 @@
 {
   "name": "gerenciador-myzap",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
@@ -87,8 +87,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "JZ-TECH-SYS",
-        "repo": "gerenciadorMyzap"
+        "owner": "magazine-do-povo",
+        "repo": "gerenciador-myzap"
       }
     ]
   }

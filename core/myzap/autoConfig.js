@@ -257,20 +257,32 @@ function normalizeIntegrationMode(value) {
 }
 
 function buildDefaultEnv({ sessionKey, myzapApiToken }) {
-    return [
+    const lines = [
         '# Arquivo .env gerado automaticamente pelo Gerenciador MyZap',
         'NODE_ENV=production',
         'PORT=5555',
         '',
-        `SESSION_NAME=${sessionKey}`,
-        `SESSION_KEY=${sessionKey}`,
-        `SESSIONKEY=${sessionKey}`,
-        '',
-        `TOKEN=${myzapApiToken}`,
-        `API_TOKEN=${myzapApiToken}`,
-        `APITOKEN=${myzapApiToken}`,
-        ''
-    ].join('\n');
+    ];
+
+    if (sessionKey) {
+        lines.push(
+            `SESSION_NAME=${sessionKey}`,
+            `SESSION_KEY=${sessionKey}`,
+            `SESSIONKEY=${sessionKey}`,
+            '',
+        );
+    }
+
+    if (myzapApiToken) {
+        lines.push(
+            `TOKEN=${myzapApiToken}`,
+            `API_TOKEN=${myzapApiToken}`,
+            `APITOKEN=${myzapApiToken}`,
+            '',
+        );
+    }
+
+    return lines.join('\n');
 }
 
 function escapeRegExp(value) {
@@ -303,12 +315,19 @@ function materializeEnvContent({ baseEnv, sessionKey, sessionName, myzapApiToken
         content = upsertEnvLine(content, 'PORT', '5555');
     }
 
-    content = upsertEnvLine(content, 'SESSION_NAME', sessionName || sessionKey);
-    content = upsertEnvLine(content, 'SESSION_KEY', sessionKey);
-    content = upsertEnvLine(content, 'SESSIONKEY', sessionKey);
-    content = upsertEnvLine(content, 'TOKEN', myzapApiToken);
-    content = upsertEnvLine(content, 'API_TOKEN', myzapApiToken);
-    content = upsertEnvLine(content, 'APITOKEN', myzapApiToken);
+    if (sessionKey) {
+        content = upsertEnvLine(content, 'SESSION_NAME', sessionName || sessionKey);
+        content = upsertEnvLine(content, 'SESSION_KEY', sessionKey);
+        content = upsertEnvLine(content, 'SESSIONKEY', sessionKey);
+    }
+
+    // Somente sobrescrever TOKEN/API_TOKEN se myzapApiToken nao estiver vazio,
+    // para preservar o valor ja existente no .env base
+    if (myzapApiToken) {
+        content = upsertEnvLine(content, 'TOKEN', myzapApiToken);
+        content = upsertEnvLine(content, 'API_TOKEN', myzapApiToken);
+        content = upsertEnvLine(content, 'APITOKEN', myzapApiToken);
+    }
 
     return content.trim();
 }
