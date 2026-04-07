@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('api', {
   updateIaConfig: (mensagemPadrao) => ipcRenderer.invoke('myzap:updateIaConfig', mensagemPadrao),
   getCapabilitySnapshot: () => ipcRenderer.invoke('myzap:getCapabilitySnapshot'),
   saveCapabilityPreferences: (preferences) => ipcRenderer.invoke('myzap:saveCapabilityPreferences', preferences),
+  getLocalServiceStatus: () => ipcRenderer.invoke('myzap:getLocalServiceStatus'),
+  saveLocalStartPreferences: (preferences) => ipcRenderer.invoke('myzap:saveLocalStartPreferences', preferences),
   startQueueWatcher: () => ipcRenderer.invoke('myzap:startQueueWatcher'),
   stopQueueWatcher: () => ipcRenderer.invoke('myzap:stopQueueWatcher'),
   getQueueWatcherStatus: () => ipcRenderer.invoke('myzap:getQueueWatcherStatus'),
@@ -35,5 +37,5 @@ contextBridge.exposeInMainWorld('api', {
   getManualSetupInfo: () => ipcRenderer.invoke('myzap:getManualSetupInfo'),
   openManualSetupGuide: () => ipcRenderer.invoke('myzap:openManualSetupGuide'),
   openManualSetupTargetDirectory: () => ipcRenderer.invoke('myzap:openManualSetupTargetDirectory'),
-  openManualSetupLink: (kind) => ipcRenderer.invoke('myzap:openManualSetupLink', kind)
+  openManualSetupLink: (kind) => ipcRenderer.invoke('myzap:openManualSetupLink', kind),
 });

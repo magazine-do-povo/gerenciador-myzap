@@ -1,4 +1,5 @@
 const { execSync, spawn } = require('child_process');
+const Store = require('electron-store');
 const fs = require('fs');
 const path = require('path');
 const { error: logError, info, warn } = require('./myzapLogger');
@@ -16,15 +17,46 @@ function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
 }
 
-function resolveDirectMyZapStartRunner(dirPath) {
+function normalizeLocalStartCommandPreference(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['start', 'dev'].includes(normalized) ? normalized : 'auto';
+}
+
+function getConfiguredLocalStartCommand(options = {}) {
+  const explicitPreference = normalizeLocalStartCommandPreference(options.localStartCommand);
+  if (explicitPreference !== 'auto') {
+    return explicitPreference;
+  }
+
+  try {
+    const store = new Store();
+    return normalizeLocalStartCommandPreference(store.get('myzap_localStartCommand'));
+  } catch (_err) {
+    return 'auto';
+  }
+}
+
+function readMyZapPackageJson(dirPath) {
   try {
     const packageJsonPath = path.join(dirPath, 'package.json');
     if (!fs.existsSync(packageJsonPath)) {
       return null;
     }
 
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-    const startScript = String(packageJson?.scripts?.start || '').trim();
+    return JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  } catch (_err) {
+    return null;
+  }
+}
+
+function resolveDirectMyZapStartRunner(dirPath, packageJson = null) {
+  try {
+    const pkg = packageJson || readMyZapPackageJson(dirPath);
+    if (!pkg) {
+      return null;
+    }
+
+    const startScript = String((pkg && pkg.scripts && pkg.scripts.start) || '').trim();
     const directNodeMatch = startScript.match(/^node(?:\.exe)?\s+"?([^"\s]+\.js)"?$/i);
 
     if (!directNodeMatch) {
@@ -45,10 +77,11 @@ function resolveDirectMyZapStartRunner(dirPath) {
       });
       return {
         command: systemNode,
-        prefixArgs: [entryFile],
+        args: [entryFile],
         shell: false,
         env: buildCleanEnvForChild(),
         source: 'direct-node-start',
+        scriptName: 'start',
       };
     }
 
@@ -61,6 +94,54 @@ function resolveDirectMyZapStartRunner(dirPath) {
   } catch (_err) {
     return null;
   }
+}
+
+function buildPackageScriptRunner(baseRunner, scriptName) {
+  const args = scriptName === 'start'
+    ? [...baseRunner.prefixArgs, 'start']
+    : [...baseRunner.prefixArgs, 'run', scriptName];
+
+  return {
+    command: baseRunner.command,
+    args,
+    shell: baseRunner.shell,
+    env: baseRunner.env,
+    source: `${baseRunner.source || baseRunner.command}:${scriptName}`,
+    scriptName,
+  };
+}
+
+async function resolveMyZapStartRunners(dirPath, options = {}) {
+  const packageJson = readMyZapPackageJson(dirPath);
+  const scripts = (packageJson && packageJson.scripts) || {};
+  const preference = getConfiguredLocalStartCommand(options);
+  const preferredOrder = preference === 'auto'
+    ? ['start', 'dev']
+    : [preference];
+  const scriptCandidates = preferredOrder.filter((scriptName) => typeof scripts[scriptName] === 'string' && scripts[scriptName].trim());
+
+  if (!scriptCandidates.length) {
+    return [];
+  }
+
+  const runners = [];
+  if (scriptCandidates.includes('start')) {
+    const directRunner = resolveDirectMyZapStartRunner(dirPath, packageJson);
+    if (directRunner) {
+      runners.push(directRunner);
+    }
+  }
+
+  const packageRunner = await getPnpmCommand();
+  if (!packageRunner) {
+    return runners;
+  }
+
+  scriptCandidates.forEach((scriptName) => {
+    runners.push(buildPackageScriptRunner(packageRunner, scriptName));
+  });
+
+  return runners;
 }
 
 /** Referencia ao child process ativo do MyZap (pnpm start) */
@@ -185,7 +266,12 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options
     const elapsed = Date.now() - inicio;
     if (elapsed >= timeoutMs) {
       warn('aguardarPorta: timeout atingido esperando porta', {
-        metadata: { area: 'iniciarMyZap', porta, elapsed, timeoutMs },
+        metadata: {
+          area: 'iniciarMyZap',
+          porta,
+          elapsed,
+          timeoutMs,
+        },
       });
       return false;
     }
@@ -193,7 +279,12 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options
     // Log periodico a cada 15 segundos para acompanhamento
     if (elapsed > 0 && elapsed % 15000 < intervalMs) {
       info(`aguardarPorta: ainda aguardando porta ${porta} (${Math.round(elapsed / 1000)}s/${Math.round(timeoutMs / 1000)}s)`, {
-        metadata: { area: 'iniciarMyZap', porta, elapsed, timeoutMs },
+        metadata: {
+          area: 'iniciarMyZap',
+          porta,
+          elapsed,
+          timeoutMs,
+        },
       });
     }
 
@@ -271,150 +362,212 @@ async function iniciarMyZap(dirPath, options = {}) {
       });
     }
 
-    const startRunner = resolveDirectMyZapStartRunner(dirPath) || await getPnpmCommand();
-    if (!startRunner) {
+    const startRunners = await resolveMyZapStartRunners(dirPath, options);
+    if (!startRunners.length) {
       logError('Nenhum runner disponivel para iniciar MyZap (nem direct-node nem pnpm/npm)', {
-        metadata: { area: 'iniciarMyZap', dirPath },
+        metadata: {
+          area: 'iniciarMyZap',
+          dirPath,
+          localStartCommand: getConfiguredLocalStartCommand(options),
+        },
       });
       return {
         status: 'error',
         message: 'Nao foi possivel carregar o executor interno de inicializacao do MyZap.',
       };
     }
+    const tentarStartRunner = async (index, previousError = null) => {
+      if (index >= startRunners.length) {
+        transition('error', {
+          message: previousError || `MyZap nao abriu a porta ${porta} dentro do tempo esperado.`,
+          phase: 'start_service',
+        });
+        return {
+          status: 'error',
+          message: previousError || `MyZap nao abriu a porta ${porta} dentro do tempo esperado.`,
+        };
+      }
 
-    info(`Runner selecionado para iniciar MyZap: ${startRunner.source || startRunner.command}`, {
-      metadata: {
-        area: 'iniciarMyZap',
-        source: startRunner.source,
-        command: startRunner.command,
-        dirPath,
-      },
-    });
+      const startRunner = startRunners[index];
 
-    reportProgress('Subindo processo local do MyZap...', 'run_start', {
-      percent: 93,
-      dirPath,
-    });
-    const childArgs = startRunner.source && startRunner.source.startsWith('direct-node-start')
-      ? [...startRunner.prefixArgs]
-      : [...startRunner.prefixArgs, 'start'];
-    const child = spawn(startRunner.command, childArgs, {
-      cwd: dirPath,
-      shell: startRunner.shell,
-      env: startRunner.env,
-      detached: false,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    // Rastrear child process para kill posterior
-    myzapChildProcess = child;
-
-    info('Child process do MyZap criado', {
-      metadata: {
-        area: 'iniciarMyZap',
-        pid: child.pid,
-        command: startRunner.command,
-        args: childArgs,
-        dirPath,
-      },
-    });
-
-    child.stdout.on('data', (data) => {
-      info('MyZap runtime stdout', {
+      info(`Runner selecionado para iniciar MyZap: ${startRunner.source || startRunner.command}`, {
         metadata: {
           area: 'iniciarMyZap',
-          output: String(data).trim(),
+          source: startRunner.source,
+          command: startRunner.command,
+          args: startRunner.args,
+          dirPath,
+          attempt: index + 1,
+          totalAttempts: startRunners.length,
+          scriptName: startRunner.scriptName || 'start',
         },
       });
-    });
-    let stderrOutput = '';
 
-    child.stderr.on('data', (data) => {
-      const text = String(data).trim();
-      stderrOutput += (stderrOutput ? '\n' : '') + text;
-      info('MyZap runtime stderr', {
+      reportProgress(`Subindo processo local do MyZap (${startRunner.scriptName || 'start'})...`, 'run_start', {
+        percent: 93,
+        dirPath,
+        scriptName: startRunner.scriptName || 'start',
+      });
+
+      const child = spawn(startRunner.command, startRunner.args, {
+        cwd: dirPath,
+        shell: startRunner.shell,
+        env: startRunner.env,
+        detached: false,
+        windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+
+      myzapChildProcess = child;
+
+      info('Child process do MyZap criado', {
         metadata: {
           area: 'iniciarMyZap',
-          output: text,
+          pid: child.pid,
+          command: startRunner.command,
+          args: startRunner.args,
+          dirPath,
+          scriptName: startRunner.scriptName || 'start',
         },
       });
-    });
 
-    let childError = null;
-
-    child.on('error', (err) => {
-      childError = err;
-      logError('Erro ao criar/executar child process do MyZap', {
-        metadata: { area: 'iniciarMyZap', error: err.message, pid: child.pid },
+      child.stdout.on('data', (data) => {
+        info('MyZap runtime stdout', {
+          metadata: {
+            area: 'iniciarMyZap',
+            output: String(data).trim(),
+            scriptName: startRunner.scriptName || 'start',
+          },
+        });
       });
-    });
 
-    child.on('exit', (code, signal) => {
-      info('Child process do MyZap finalizou', {
-        metadata: { area: 'iniciarMyZap', exitCode: code, signal, pid: child.pid },
+      let stderrOutput = '';
+
+      child.stderr.on('data', (data) => {
+        const text = String(data).trim();
+        stderrOutput += (stderrOutput ? '\n' : '') + text;
+        info('MyZap runtime stderr', {
+          metadata: {
+            area: 'iniciarMyZap',
+            output: text,
+            scriptName: startRunner.scriptName || 'start',
+          },
+        });
       });
-      if (typeof code === 'number' && code !== 0) {
-        // Extrair primeira linha util do stderr (sem stack trace)
-        const firstLine = stderrOutput
-          .split('\n')
-          .map((l) => l.trim())
-          .find((l) => l && !l.startsWith('at ') && !l.startsWith('node:'));
-        const detail = firstLine || stderrOutput.slice(0, 200);
-        const msg = detail
-          ? `MyZap finalizou com codigo ${code}: ${detail}`
-          : `MyZap finalizou com codigo ${code} (signal: ${signal || 'nenhum'})`;
-        childError = new Error(msg);
+
+      let childError = null;
+
+      child.on('error', (err) => {
+        childError = err;
+        logError('Erro ao criar/executar child process do MyZap', {
+          metadata: {
+            area: 'iniciarMyZap',
+            error: err.message,
+            pid: child.pid,
+            scriptName: startRunner.scriptName || 'start',
+          },
+        });
+      });
+
+      child.on('exit', (code, signal) => {
+        info('Child process do MyZap finalizou', {
+          metadata: {
+            area: 'iniciarMyZap',
+            exitCode: code,
+            signal,
+            pid: child.pid,
+            scriptName: startRunner.scriptName || 'start',
+          },
+        });
+        if (typeof code === 'number' && code !== 0) {
+          const firstLine = stderrOutput
+            .split('\n')
+            .map((l) => l.trim())
+            .find((l) => l && !l.startsWith('at ') && !l.startsWith('node:'));
+          const detail = firstLine || stderrOutput.slice(0, 200);
+          const msg = detail
+            ? `MyZap (${startRunner.scriptName || 'start'}) finalizou com codigo ${code}: ${detail}`
+            : `MyZap (${startRunner.scriptName || 'start'}) finalizou com codigo ${code} (signal: ${signal || 'nenhum'})`;
+          childError = new Error(msg);
+        }
+        if (myzapChildProcess === child) {
+          myzapChildProcess = null;
+        }
+      });
+
+      reportProgress(`Aguardando MyZap abrir a porta local via ${startRunner.scriptName || 'start'}...`, 'wait_port', {
+        percent: 96,
+        dirPath,
+        porta,
+        scriptName: startRunner.scriptName || 'start',
+      });
+      const abriuPorta = await aguardarPorta(porta, 180000, 1500, {
+        getChildError: () => childError,
+        isChildAlive: () => myzapChildProcess !== null,
+      });
+
+      if (abriuPorta) {
+        transition('running', {
+          message: 'MyZap iniciado e porta confirmada.',
+          dirPath,
+          porta,
+          scriptName: startRunner.scriptName || 'start',
+        });
+
+        info('MyZap iniciado e porta confirmada', {
+          metadata: {
+            porta,
+            dirPath,
+            runner: startRunner.source || startRunner.command,
+            scriptName: startRunner.scriptName || 'start',
+          },
+        });
+        reportProgress('MyZap iniciado e porta confirmada.', 'ready', {
+          percent: 98,
+          dirPath,
+          porta,
+          scriptName: startRunner.scriptName || 'start',
+        });
+
+        return {
+          status: 'success',
+          message: 'MyZap iniciado com sucesso!',
+          runner: startRunner.source || startRunner.command,
+          scriptName: startRunner.scriptName || 'start',
+        };
       }
-      // Limpar referencia do child ao sair
-      if (myzapChildProcess === child) {
-        myzapChildProcess = null;
-      }
-    });
 
-    reportProgress('Aguardando MyZap abrir a porta local...', 'wait_port', {
-      percent: 96,
-      dirPath,
-      porta,
-    });
-    const abriuPorta = await aguardarPorta(porta, 180000, 1500, {
-      getChildError: () => childError,
-      isChildAlive: () => myzapChildProcess !== null,
-    });
+      const nextError = childError
+        ? `Falha ao iniciar com ${startRunner.scriptName || 'start'}: ${childError.message}`
+        : `MyZap nao abriu a porta ${porta} com ${startRunner.scriptName || 'start'} dentro do tempo esperado.`;
 
-    if (!abriuPorta) {
-      transition('error', {
-        message: childError
-          ? `Falha ao iniciar: ${childError.message}`
-          : `MyZap nao abriu a porta ${porta} dentro do tempo esperado.`,
-        phase: 'start_service',
+      warn('Tentativa de start do MyZap falhou; avaliando fallback', {
+        metadata: {
+          area: 'iniciarMyZap',
+          dirPath,
+          attempt: index + 1,
+          totalAttempts: startRunners.length,
+          scriptName: startRunner.scriptName || 'start',
+          error: nextError,
+        },
       });
-      return {
-        status: 'error',
-        message: childError
-          ? `Falha ao iniciar: ${childError.message}`
-          : `MyZap nao abriu a porta ${porta} dentro do tempo esperado.`,
-      };
-    }
 
-    transition('running', { message: 'MyZap iniciado e porta confirmada.', dirPath, porta });
+      if (myzapChildProcess) {
+        killMyZapProcess();
+      }
 
-    info('MyZap iniciado e porta confirmada', {
-      metadata: { porta, dirPath, runner: startRunner.source || startRunner.command },
-    });
-    reportProgress('MyZap iniciado e porta confirmada.', 'ready', {
-      percent: 98,
-      dirPath,
-      porta,
-    });
-
-    return {
-      status: 'success',
-      message: 'MyZap iniciado com sucesso!',
+      return tentarStartRunner(index + 1, nextError);
     };
+
+    return tentarStartRunner(0);
   } catch (err) {
-    transition('error', { message: getErrorMessage(err), phase: 'start_service' });
-    logError('Erro ao gerenciar inicio do MyZap', { metadata: { error: err } });
+    transition('error', {
+      message: getErrorMessage(err),
+      phase: 'start_service',
+    });
+    logError('Erro ao gerenciar inicio do MyZap', {
+      metadata: { error: err },
+    });
     return {
       status: 'error',
       message: `Erro: ${err.message}`,
