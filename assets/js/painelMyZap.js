@@ -255,9 +255,16 @@ async function getStoredLocalStartPreferences() {
 }
 
 function getLocalStartPreferencesFromForm() {
+  const localStartMode = normalizeLocalStartMode(document.getElementById('myzap-local-start-mode')?.value || 'automatic');
+  let localStartCommand = normalizeLocalStartCommand(document.getElementById('myzap-local-start-command')?.value || 'auto');
+
+  if (localStartMode === 'manual') {
+    localStartCommand = 'dev';
+  }
+
   return {
-    localStartMode: normalizeLocalStartMode(document.getElementById('myzap-local-start-mode')?.value || 'automatic'),
-    localStartCommand: normalizeLocalStartCommand(document.getElementById('myzap-local-start-command')?.value || 'auto')
+    localStartMode,
+    localStartCommand
   };
 }
 
@@ -268,7 +275,7 @@ function renderLocalStartPreferenceHelp(preferences = {}) {
   if (!help) return;
 
   if (localStartMode === 'manual') {
-    help.textContent = `Modo manual: o gerenciador nao sobe a API sozinho. Abra a pasta do MyZap e rode ${getLocalStartCommandExample(localStartCommand)}. Depois volte ao painel e clique em Validar API manual.`;
+    help.textContent = `Modo manual: o gerenciador vai disparar o MaisApp por fora com ${getLocalStartCommandExample(localStartCommand)}. Voce tambem pode usar o tray para iniciar agora ou ativar/remover o auto inicio externo.`;
     return;
   }
 
@@ -279,8 +286,68 @@ function updateStartServiceButtonLabel(localStartMode = 'automatic') {
   const btnStart = document.getElementById('btn-start');
   if (!btnStart) return;
   btnStart.textContent = normalizeLocalStartMode(localStartMode) === 'manual'
-    ? 'Validar API manual'
+    ? 'Iniciar MaisApp por fora'
     : 'Iniciar MyZap';
+}
+
+async function refreshExternalStartControls(preferences = getLocalStartPreferencesFromForm()) {
+  const actionsBox = document.getElementById('myzap-external-start-actions');
+  const stateText = document.getElementById('myzap-external-start-state');
+  const btnStartExternal = document.getElementById('btn-external-start-now');
+  const btnEnableAutoStart = document.getElementById('btn-external-autostart-enable');
+  const btnRemoveAutoStart = document.getElementById('btn-external-autostart-remove');
+
+  if (!actionsBox || !stateText || !btnStartExternal || !btnEnableAutoStart || !btnRemoveAutoStart) {
+    return;
+  }
+
+  const normalized = {
+    localStartMode: normalizeLocalStartMode(preferences.localStartMode),
+    localStartCommand: normalizeLocalStartCommand(preferences.localStartCommand)
+  };
+
+  if (normalized.localStartMode === 'manual') {
+    normalized.localStartCommand = 'dev';
+  }
+
+  if (!window.api?.getExternalMyZapAutoStartState) {
+    actionsBox.classList.add('d-none');
+    return;
+  }
+
+  try {
+    const state = await window.api.getExternalMyZapAutoStartState();
+    const shouldShow = Boolean(state?.available) && (normalized.localStartMode === 'manual' || state?.autoStartInstalled);
+    const hasConfiguredDir = Boolean(state?.configuredDir);
+    const autoStartInstalled = Boolean(state?.autoStartInstalled);
+
+    actionsBox.classList.toggle('d-none', !shouldShow);
+    if (!shouldShow) {
+      return;
+    }
+
+    btnStartExternal.disabled = !hasConfiguredDir;
+    btnEnableAutoStart.disabled = !hasConfiguredDir || autoStartInstalled;
+    btnRemoveAutoStart.disabled = !autoStartInstalled;
+
+    if (!hasConfiguredDir) {
+      stateText.textContent = 'Configure o diretorio do MyZap para liberar o start externo.';
+      return;
+    }
+
+    if (autoStartInstalled) {
+      stateText.textContent = `Auto inicio externo ativo. O gerenciador vai chamar ${getLocalStartCommandExample(normalized.localStartCommand)} no logon do Windows.`;
+      return;
+    }
+
+    stateText.textContent = `Start externo disponivel com ${getLocalStartCommandExample(normalized.localStartCommand)}. Use os botoes abaixo para testar agora ou ativar o auto inicio externo.`;
+  } catch (error) {
+    actionsBox.classList.toggle('d-none', normalized.localStartMode !== 'manual');
+    btnStartExternal.disabled = true;
+    btnEnableAutoStart.disabled = true;
+    btnRemoveAutoStart.disabled = true;
+    stateText.textContent = `Nao foi possivel consultar o start externo: ${error?.message || error}`;
+  }
 }
 
 function applyStoredLocalStartPreferencesToUi(preferences = {}) {
@@ -288,6 +355,10 @@ function applyStoredLocalStartPreferencesToUi(preferences = {}) {
     localStartMode: normalizeLocalStartMode(preferences.localStartMode),
     localStartCommand: normalizeLocalStartCommand(preferences.localStartCommand)
   };
+
+  if (normalized.localStartMode === 'manual') {
+    normalized.localStartCommand = 'dev';
+  }
 
   const localStartModeField = document.getElementById('myzap-local-start-mode');
   const localStartCommandField = document.getElementById('myzap-local-start-command');
@@ -297,6 +368,9 @@ function applyStoredLocalStartPreferencesToUi(preferences = {}) {
 
   renderLocalStartPreferenceHelp(normalized);
   updateStartServiceButtonLabel(normalized.localStartMode);
+  refreshExternalStartControls(normalized).catch((error) => {
+    console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
+  });
 }
 
 async function saveLocalStartPreferencesFromUi() {
@@ -982,7 +1056,7 @@ async function loadConfigs() {
           statusApi.classList.add('bg-success');
           btnStart.disabled = true;
         } else if (localStartPreferences.localStartMode === 'manual') {
-          statusApi.textContent = `Inicializacao manual ativa. Abra a pasta do MyZap e rode ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
+          statusApi.textContent = `Modo manual ativo. Clique em "Iniciar MaisApp por fora" ou use o tray para disparar ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
           statusApi.classList.add('bg-warning', 'text-dark');
           btnStart.disabled = false;
         } else {
@@ -1649,6 +1723,80 @@ function showConfigStatus(type, message) {
   }
 }
 
+async function runExternalConfigAction(buttonId, busyText, action) {
+  const button = document.getElementById(buttonId);
+  const oldText = button?.textContent || '';
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = busyText;
+  }
+
+  try {
+    return await action();
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.textContent = oldText;
+    }
+
+    refreshExternalStartControls().catch((error) => {
+      console.warn('Falha ao atualizar acoes do start externo:', error?.message || error);
+    });
+  }
+}
+
+async function iniciarMyZapExternoAgora() {
+  if (!window.api?.startExternalMyZapNow) {
+    showConfigStatus('error', 'Esta versao do gerenciador nao expoe o start externo do MaisApp.');
+    return;
+  }
+
+  const result = await runExternalConfigAction('btn-external-start-now', 'Iniciando...', () => window.api.startExternalMyZapNow());
+  if (result?.status === 'success') {
+    showConfigStatus('success', result.message || 'Disparo externo solicitado com sucesso.');
+    startConnectionStatusPolling();
+    setTimeout(() => {
+      checkConnection().catch((error) => {
+        console.warn('Falha ao revalidar conexao apos start externo:', error?.message || error);
+      });
+    }, 5000);
+    return;
+  }
+
+  showConfigStatus('error', result?.message || 'Nao foi possivel iniciar o MaisApp por fora.');
+}
+
+async function ativarAutoInicioExterno() {
+  if (!window.api?.installExternalMyZapAutoStart) {
+    showConfigStatus('error', 'Esta versao do gerenciador nao expoe o auto inicio externo.');
+    return;
+  }
+
+  const result = await runExternalConfigAction('btn-external-autostart-enable', 'Ativando...', () => window.api.installExternalMyZapAutoStart());
+  if (result?.status === 'success') {
+    showConfigStatus('success', result.message || 'Auto inicio externo ativado com sucesso.');
+    return;
+  }
+
+  showConfigStatus('error', result?.message || 'Nao foi possivel ativar o auto inicio externo.');
+}
+
+async function removerAutoInicioExterno() {
+  if (!window.api?.removeExternalMyZapAutoStart) {
+    showConfigStatus('error', 'Esta versao do gerenciador nao expoe a remocao do auto inicio externo.');
+    return;
+  }
+
+  const result = await runExternalConfigAction('btn-external-autostart-remove', 'Removendo...', () => window.api.removeExternalMyZapAutoStart());
+  if (result?.status === 'success') {
+    showConfigStatus('success', result.message || 'Auto inicio externo removido com sucesso.');
+    return;
+  }
+
+  showConfigStatus('error', result?.message || 'Nao foi possivel remover o auto inicio externo.');
+}
+
 function updateConfigInstallHint(tokenValue) {
   const hint = document.getElementById('config-install-hint');
   const btnInstall = document.getElementById('btn-save-and-install');
@@ -1679,13 +1827,24 @@ const localStartCommandField = document.getElementById('myzap-local-start-comman
 
 if (localStartModeField) {
   localStartModeField.addEventListener('change', () => {
-    renderLocalStartPreferenceHelp(getLocalStartPreferencesFromForm());
+    if (normalizeLocalStartMode(localStartModeField.value) === 'manual' && localStartCommandField) {
+      localStartCommandField.value = 'dev';
+    }
+    const preferences = getLocalStartPreferencesFromForm();
+    renderLocalStartPreferenceHelp(preferences);
+    refreshExternalStartControls(preferences).catch((error) => {
+      console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
+    });
   });
 }
 
 if (localStartCommandField) {
   localStartCommandField.addEventListener('change', () => {
-    renderLocalStartPreferenceHelp(getLocalStartPreferencesFromForm());
+    const preferences = getLocalStartPreferencesFromForm();
+    renderLocalStartPreferenceHelp(preferences);
+    refreshExternalStartControls(preferences).catch((error) => {
+      console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
+    });
   });
 }
 
@@ -1714,7 +1873,11 @@ cfg_myzap.onsubmit = async (e) => {
     };
     const result = await window.api.saveEnvSecrets(secrets);
     if (result?.status === 'success') {
-      showConfigStatus('success', '✅ ' + result.message);
+      const externalMessage = localStartResult?.externalStartResult?.message;
+      const saveMessage = externalMessage
+        ? `${result.message} ${externalMessage}`
+        : result.message;
+      showConfigStatus('success', '✅ ' + saveMessage);
       updateConfigInstallHint(tokenVal);
     } else {
       showConfigStatus('error', 'Erro ao salvar: ' + (result?.message || 'desconhecido'));
@@ -1840,19 +2003,23 @@ async function iniciarMyZapServico() {
   statusApi.className = 'badge bg-warning text-dark status-badge';
   try {
     if (localStartPreferences.localStartMode === 'manual') {
-      const localServiceStatus = await window.api.getLocalServiceStatus();
-      if (localServiceStatus?.isAvailable) {
-        statusApi.textContent = 'API manual detectada na porta local.';
-        statusApi.classList.remove('bg-warning', 'text-dark');
-        statusApi.classList.add('bg-success');
-        btnStart.disabled = true;
-        await checkConnection();
-        return;
+      const result = await window.api.startExternalMyZapNow();
+      statusApi.classList.remove('bg-success', 'bg-danger', 'bg-warning', 'text-dark');
+
+      if (result?.status === 'success') {
+        statusApi.textContent = result.message || `Disparo externo solicitado com ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
+        statusApi.classList.add('bg-info', 'text-dark');
+        startConnectionStatusPolling();
+        setTimeout(() => {
+          checkConnection().catch((error) => {
+            console.warn('Falha ao revalidar MyZap apos start externo:', error?.message || error);
+          });
+        }, 5000);
+      } else {
+        statusApi.textContent = result?.message || `Nao foi possivel disparar ${getLocalStartCommandExample(localStartPreferences.localStartCommand)} pelo gerenciador.`;
+        statusApi.classList.add('bg-danger');
       }
 
-      statusApi.textContent = `API manual nao encontrada. Abra a pasta do MyZap e rode ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
-      statusApi.classList.remove('bg-success', 'bg-danger');
-      statusApi.classList.add('bg-warning', 'text-dark');
       btnStart.disabled = false;
       return;
     }

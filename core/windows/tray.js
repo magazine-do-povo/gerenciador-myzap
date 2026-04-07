@@ -9,6 +9,10 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
   const {
     createSettings,
     toggleMyzap,
+    startExternalMyZapNow,
+    installExternalMyZapAutoStart,
+    removeExternalMyZapAutoStart,
+    getExternalMyZapState,
     updateMyZapNow,
     createPainelMyZap,
     createFilaMyZap,
@@ -18,7 +22,11 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     checkUpdates
   } = callbacks;
 
-  return [
+  const externalState = typeof getExternalMyZapState === 'function'
+    ? getExternalMyZapState()
+    : { available: false, autoStartInstalled: false, manualMode: false, configuredDir: false };
+
+  const template = [
     { label: '📱  Gerenciador MyZap', enabled: false },
     { label: `      v${appVersion}`, enabled: false },
     { type: 'separator' },
@@ -30,20 +38,49 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     { label: '🔄  Atualizar MyZap agora', click: updateMyZapNow },
     { label: '💬  Painel MyZap', click: createPainelMyZap },
     { label: '📬  Fila de mensagens', click: createFilaMyZap },
-    { type: 'separator' },
-    { label: '── Sistema ──', enabled: false },
-    { label: '⚙️  Configuracoes da API', click: createSettings },
-    { label: '🛠️  Ajuda de configuracao manual', click: createManualSetupWindow },
-    { label: '📋  Ver logs', click: openLogViewer },
-    { label: '📁  Abrir pasta de logs', click: abrirPastaLogs },
-    {
-      label: '🔎  Verificar atualizacao',
-      click: () => checkUpdates?.(),
-      enabled: !!checkUpdates
-    },
-    { type: 'separator' },
-    { label: '🚪  Sair', role: 'quit' }
   ];
+
+  if (externalState.available) {
+    template.push({ type: 'separator' });
+    template.push({ label: '── MaisApp Externo ──', enabled: false });
+    template.push({
+      label: externalState.manualMode
+        ? '▶️  Iniciar MaisApp por fora agora'
+        : '▶️  Disparar start externo agora',
+      click: () => startExternalMyZapNow(),
+      enabled: !!startExternalMyZapNow && externalState.configuredDir,
+    });
+    template.push({
+      label: externalState.autoStartInstalled
+        ? '✅  Auto inicio externo ativado'
+        : '🪟  Ativar auto inicio externo',
+      click: () => installExternalMyZapAutoStart(),
+      enabled: !!installExternalMyZapAutoStart && externalState.configuredDir && !externalState.autoStartInstalled,
+    });
+    template.push({
+      label: '🧹  Remover auto inicio externo',
+      click: () => removeExternalMyZapAutoStart(),
+      enabled: !!removeExternalMyZapAutoStart && externalState.autoStartInstalled,
+    });
+  }
+
+  template.push({ type: 'separator' });
+  template.push({ label: '── Sistema ──', enabled: false });
+  template.push({ label: '⚙️  Configuracoes da API', click: createSettings });
+  template.push({ label: '🛠️  Ajuda de configuracao manual', click: createManualSetupWindow });
+  template.push({ label: '📋  Ver logs', click: openLogViewer });
+  template.push({ label: '📁  Abrir pasta de logs', click: abrirPastaLogs });
+  template.push({
+    label: '🔎  Verificar atualizacao',
+    click: () => {
+      if (checkUpdates) checkUpdates();
+    },
+    enabled: !!checkUpdates
+  });
+  template.push({ type: 'separator' });
+  template.push({ label: '🚪  Sair', role: 'quit' });
+
+  return template;
 }
 
 function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {

@@ -53,6 +53,18 @@
     "asarUnpack": [
       "node_modules/pnpm/**"
     ],
+    "extraResources": [
+      {
+        "from": "scripts",
+        "to": "support-scripts",
+        "filter": [
+          "run-myzap-dev-background.cmd",
+          "start-myzap-background.ps1",
+          "install-myzap-dev-autostart.cmd",
+          "remove-myzap-dev-autostart.cmd"
+        ]
+      }
+    ],
     "directories": {
       "output": "dist"
     },

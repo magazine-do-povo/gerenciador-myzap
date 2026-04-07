@@ -339,14 +339,14 @@
                             <div class="mb-4">
                                 <h6 class="fw-semibold mb-2">Inicializacao local do MyZap</h6>
                                 <p class="text-muted small mb-3">
-                                    Escolha se o gerenciador deve subir a API local sozinho ou apenas se conectar a uma API ja iniciada manualmente na pasta do MyZap.
+                                    Escolha se o gerenciador deve subir a API local sozinho ou usar o start externo do MaisApp para maquinas em que o processo interno nao sobe corretamente.
                                 </p>
                                 <div class="row g-3">
                                     <div class="col-md-6">
                                         <label class="form-label" for="myzap-local-start-mode">Estrategia de inicializacao</label>
                                         <select id="myzap-local-start-mode" class="form-select">
                                             <option value="automatic">Automatica pelo gerenciador</option>
-                                            <option value="manual">Manual pela pasta do MyZap</option>
+                                            <option value="manual">Start externo pelo gerenciador</option>
                                         </select>
                                     </div>
                                     <div class="col-md-6">
@@ -360,6 +360,22 @@
                                 </div>
                                 <div id="myzap-local-start-help" class="form-text mt-2">
                                     O gerenciador vai carregar a estrategia salva e mostrar aqui como o runtime local sera tratado.
+                                </div>
+                                <div id="myzap-external-start-actions" class="d-none mt-3">
+                                    <div class="d-flex gap-2 flex-wrap">
+                                        <button type="button" id="btn-external-start-now" class="btn btn-outline-primary btn-sm" onclick="iniciarMyZapExternoAgora()">
+                                            Iniciar por fora agora
+                                        </button>
+                                        <button type="button" id="btn-external-autostart-enable" class="btn btn-outline-success btn-sm" onclick="ativarAutoInicioExterno()">
+                                            Ativar auto inicio externo
+                                        </button>
+                                        <button type="button" id="btn-external-autostart-remove" class="btn btn-outline-danger btn-sm" onclick="removerAutoInicioExterno()">
+                                            Remover auto inicio externo
+                                        </button>
+                                    </div>
+                                    <div id="myzap-external-start-state" class="form-text mt-2">
+                                        O gerenciador vai consultar aqui o estado do start externo.
+                                    </div>
                                 </div>
                             </div>
 
