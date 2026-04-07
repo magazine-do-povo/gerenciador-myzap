@@ -1,0 +1,37 @@
+AJUDA DE CONFIGURACAO MANUAL DO MYZAP
+
+Este roteiro e uma segunda saida para suporte de TI quando a automacao do Gerenciador MyZap demorar mais do que o esperado.
+
+1. Instalar Node.js
+Download oficial:
+{{NODE_DOWNLOAD_URL}}
+
+2. Instalar Git
+Download oficial:
+{{GIT_DOWNLOAD_URL}}
+
+3. Pasta onde o MyZap deve ficar
+{{TARGET_DIR}}
+
+4. Repositorio do MyZap
+Pagina do projeto:
+{{REPO_WEB_URL}}
+
+Clone recomendado:
+{{CLONE_COMMAND}}
+
+Atualizacao manual opcional:
+{{UPDATE_COMMAND}}
+
+5. Depois de instalar Node/Git e clonar o repositorio
+- Volte ao painel do Gerenciador MyZap.
+- Clique em Instalar Novamente.
+- O gerenciador vai detectar que Node, Git e o repositorio ja estao prontos e seguir com o restante da instalacao.
+
+6. Observacoes
+- Se a pasta {{TARGET_DIR}} ja existir com arquivos antigos, revise antes de clonar por cima.
+- Se o Git nao aceitar clonar na pasta atual, apague o conteudo antigo ou use outra pasta temporaria e depois mova os arquivos.
+- Este roteiro e pensado principalmente para maquinas Windows com suporte de TI local.
+
+Gerado para:
+{{PLATFORM_LABEL}}

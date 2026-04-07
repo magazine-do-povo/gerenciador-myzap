@@ -1,5 +1,6 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
+const path = require('path');
 const { error: logError, warn, info } = require('./myzapLogger');
 const {
   killProcessesOnPort,
@@ -18,6 +19,8 @@ const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
 const { createInstallDebugLogContext } = require('./installDebugLog');
+
+const MYZAP_GIT_URL = 'https://github.com/JZ-TECH-SYS/myzap.git';
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
@@ -54,6 +57,132 @@ function attachDebugLog(result, debugLog) {
   return {
     ...result,
     debugLogPath: debugLog.filePath,
+  };
+}
+
+function hasValidMyZapFiles(dirPath) {
+  if (!dirPath || !fs.existsSync(dirPath)) {
+    return false;
+  }
+
+  return fs.existsSync(path.join(dirPath, 'package.json'));
+}
+
+async function obterCodigoMyZap(dirPath, reportProgress, debugLog) {
+  const gitRunner = await getSystemGitCommand();
+  fs.mkdirSync(path.dirname(dirPath), { recursive: true });
+
+  if (gitRunner) {
+    reportProgress('Clonando codigo do MyZap via Git...', 'git_clone', {
+      percent: 35,
+      dirPath,
+      repositoryUrl: MYZAP_GIT_URL,
+    });
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('Iniciando git clone do MyZap', {
+        dirPath,
+        repositoryUrl: MYZAP_GIT_URL,
+        gitCommand: gitRunner.command,
+      });
+    }
+
+    const cloneEnv = {
+      ...gitRunner.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GCM_INTERACTIVE: 'Never',
+    };
+    const cloneResult = await rodarComando(
+      {
+        ...gitRunner,
+        env: cloneEnv,
+        source: 'system-git-clone',
+      },
+      ['clone', '--depth', '1', '--branch', 'main', MYZAP_GIT_URL, dirPath],
+      {
+        cwd: path.dirname(dirPath),
+        debugLog,
+      },
+    );
+
+    if (cloneResult.ok && hasValidMyZapFiles(dirPath)) {
+      if (process.platform === 'win32') {
+        await rodarComando(
+          {
+            ...gitRunner,
+            env: cloneEnv,
+            source: 'system-git-config-longpaths',
+          },
+          ['config', 'core.longpaths', 'true'],
+          {
+            cwd: dirPath,
+            debugLog,
+          },
+        );
+      }
+
+      info('Codigo do MyZap obtido com sucesso via git clone', {
+        metadata: {
+          area: 'clonarRepositorio',
+          dirPath,
+          source: 'git-clone',
+          repositoryUrl: MYZAP_GIT_URL,
+        },
+      });
+
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('Git clone do MyZap concluido com sucesso', {
+          dirPath,
+          repositoryUrl: MYZAP_GIT_URL,
+        });
+      }
+
+      return {
+        status: 'success',
+        source: 'git-clone',
+      };
+    }
+
+    const cloneDetail = getCommandFailureDetail(cloneResult);
+    warn('git clone do MyZap falhou, tentando fallback via ZIP', {
+      metadata: {
+        area: 'clonarRepositorio',
+        dirPath,
+        repositoryUrl: MYZAP_GIT_URL,
+        exitCode: cloneResult.exitCode,
+        errorMessage: cloneResult.errorMessage,
+        detail: cloneDetail,
+      },
+    });
+
+    if (debugLog && typeof debugLog.log === 'function') {
+      debugLog.log('git clone do MyZap falhou, iniciando fallback via ZIP', {
+        dirPath,
+        repositoryUrl: MYZAP_GIT_URL,
+        exitCode: cloneResult.exitCode,
+        errorMessage: cloneResult.errorMessage,
+        detail: cloneDetail,
+      });
+    }
+
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true });
+    } catch (_cleanupErr) { /* melhor esforco */ }
+  }
+
+  reportProgress('Baixando pacote compactado do MyZap...', 'download_archive', {
+    percent: 35,
+    dirPath,
+  });
+
+  await downloadRepositoryArchive(dirPath, {
+    onProgress: reportProgress,
+    debugLog,
+  });
+
+  return {
+    status: 'success',
+    source: 'zip-download',
   };
 }
 
@@ -374,15 +503,15 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       }
     }
 
-    transition('cloning_repo', { message: 'Baixando pacote do MyZap...', dirPath });
+    transition('cloning_repo', { message: 'Obtendo codigo do MyZap...', dirPath });
 
     try {
-      await downloadRepositoryArchive(dirPath, {
-        onProgress: reportProgress,
-        debugLog,
-      });
+      const sourceResult = await obterCodigoMyZap(dirPath, reportProgress, debugLog);
+      if (debugLog && typeof debugLog.log === 'function') {
+        debugLog.log('Codigo do MyZap preparado para instalacao', sourceResult);
+      }
     } catch (archiveErr) {
-      logError('Falha ao baixar o pacote do MyZap para instalacao local', {
+      logError('Falha ao obter o codigo do MyZap para instalacao local', {
         metadata: {
           area: 'clonarRepositorio',
           dirPath,
@@ -391,7 +520,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       });
       return attachDebugLog({
         status: 'error',
-        message: getErrorMessage(archiveErr) || 'Erro ao baixar o pacote do MyZap para instalacao local.',
+        message: getErrorMessage(archiveErr) || 'Erro ao obter o codigo do MyZap para instalacao local.',
       }, debugLog);
     }
 

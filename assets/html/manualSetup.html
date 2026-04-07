@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>Ajuda manual - Gerenciador MyZap</title>
+    <link rel="stylesheet" href="../css/bootstrap5.0.2.min.css" />
+    <link rel="stylesheet" href="../css/manualSetup.css" />
+  </head>
+
+  <body>
+    <main class="manual-shell container-fluid py-4 px-4 px-lg-5">
+      <section class="manual-hero card border-0 mb-4">
+        <div class="card-body p-4 p-lg-5">
+          <span class="manual-kicker">Suporte de TI</span>
+          <h1 class="manual-title mt-2 mb-3">Configuracao manual do MyZap</h1>
+          <p class="manual-lead mb-0">
+            Esta tela e um plano B para quando a instalacao automatica demorar demais.
+            O objetivo e deixar Node, Git e o repositorio do MyZap prontos para o gerenciador concluir o restante sem retrabalho.
+          </p>
+        </div>
+      </section>
+
+      <div id="manual-status" class="alert alert-info manual-alert mb-4" role="alert">
+        Carregando roteiro manual...
+      </div>
+
+      <section class="row g-4 mb-4">
+        <div class="col-12 col-xl-7">
+          <div class="card manual-card h-100">
+            <div class="card-body p-4">
+              <h2 class="manual-section-title">Acoes rapidas</h2>
+              <div class="manual-actions-grid">
+                <button id="btn-open-guide" class="btn btn-primary">Abrir arquivo TXT</button>
+                <button id="btn-open-folder" class="btn btn-outline-light">Abrir pasta do MyZap</button>
+                <button id="btn-open-node" class="btn btn-outline-info">Baixar Node.js</button>
+                <button id="btn-open-git" class="btn btn-outline-info">Baixar Git</button>
+                <button id="btn-open-repo" class="btn btn-outline-success">Abrir repositorio MyZap</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-5">
+          <div class="card manual-card h-100">
+            <div class="card-body p-4">
+              <h2 class="manual-section-title">Pasta alvo</h2>
+              <p class="manual-small-label mb-2">O repositorio deve ficar exatamente aqui:</p>
+              <div id="target-dir" class="manual-code-block mb-3"></div>
+
+              <p class="manual-small-label mb-2">Arquivo TXT gerado para suporte:</p>
+              <div id="guide-path" class="manual-code-block"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="row g-4">
+        <div class="col-12 col-xl-6">
+          <div class="card manual-card h-100">
+            <div class="card-body p-4">
+              <h2 class="manual-section-title">Passo 1: instalar ferramentas</h2>
+              <p class="manual-muted">Use os links oficiais abaixo.</p>
+
+              <div class="manual-link-box mb-3">
+                <span class="manual-link-label">Node.js</span>
+                <div id="node-url" class="manual-code-block"></div>
+              </div>
+
+              <div class="manual-link-box">
+                <span class="manual-link-label">Git</span>
+                <div id="git-url" class="manual-code-block"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12 col-xl-6">
+          <div class="card manual-card h-100">
+            <div class="card-body p-4">
+              <h2 class="manual-section-title">Passo 2: clonar o repositorio</h2>
+              <p class="manual-muted mb-2">Abra o terminal e execute:</p>
+              <textarea id="clone-commands" class="form-control manual-textarea" readonly></textarea>
+
+              <p class="manual-muted mt-4 mb-2">Atualizacao manual opcional:</p>
+              <textarea id="update-commands" class="form-control manual-textarea" readonly></textarea>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-12">
+          <div class="card manual-card">
+            <div class="card-body p-4">
+              <h2 class="manual-section-title">Passo 3: voltar ao gerenciador</h2>
+              <p id="next-step-hint" class="manual-lead-small mb-0"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="../js/bootstrap5.0.2.js"></script>
+    <script src="../js/manualSetup.js"></script>
+  </body>
+</html>

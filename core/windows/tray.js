@@ -12,6 +12,7 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     updateMyZapNow,
     createPainelMyZap,
     createFilaMyZap,
+    createManualSetupWindow,
     openLogViewer,
     abrirPastaLogs,
     checkUpdates
@@ -32,6 +33,7 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     { type: 'separator' },
     { label: '── Sistema ──', enabled: false },
     { label: '⚙️  Configuracoes da API', click: createSettings },
+    { label: '🛠️  Ajuda de configuracao manual', click: createManualSetupWindow },
     { label: '📋  Ver logs', click: openLogViewer },
     { label: '📁  Abrir pasta de logs', click: abrirPastaLogs },
     {

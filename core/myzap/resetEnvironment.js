@@ -1,7 +1,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
 const { killProcessesOnPort, commandExists, isPortInUse } = require('./processUtils');
@@ -30,6 +30,75 @@ function isSafeResetPath(targetPath) {
     return false;
 }
 
+function pathExists(targetPath) {
+    try {
+        return fs.existsSync(targetPath);
+    } catch (_err) {
+        return false;
+    }
+}
+
+function getRemainingEntriesPreview(targetPath) {
+    try {
+        if (!pathExists(targetPath)) {
+            return [];
+        }
+
+        return fs.readdirSync(targetPath).slice(0, 10);
+    } catch (err) {
+        return [`[erro_ao_listar:${err?.message || String(err)}]`];
+    }
+}
+
+function runWindowsDirectoryRemovalFallback(targetPath) {
+    const normalized = path.resolve(String(targetPath));
+    const safePowerShellPath = normalized.replace(/'/g, "''");
+    const commandLine = `attrib -r -h -s "${normalized}\\*" /s /d 2>nul & rmdir /s /q "${normalized}"`;
+    const attempts = [];
+    const commands = [
+        {
+            label: 'cmd-rmdir',
+            command: 'cmd.exe',
+            args: ['/d', '/s', '/c', commandLine]
+        },
+        {
+            label: 'powershell-removeitem',
+            command: 'powershell.exe',
+            args: [
+                '-NoProfile',
+                '-NonInteractive',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-Command',
+                `$ErrorActionPreference='Stop'; $path='${safePowerShellPath}'; if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction Stop; }`
+            ]
+        }
+    ];
+
+    for (const attempt of commands) {
+        if (!pathExists(normalized)) {
+            break;
+        }
+
+        const result = spawnSync(attempt.command, attempt.args, {
+            encoding: 'utf8',
+            shell: false,
+            windowsHide: true,
+            timeout: 15000
+        });
+
+        attempts.push({
+            label: attempt.label,
+            status: typeof result.status === 'number' ? result.status : null,
+            stdout: String(result.stdout || '').trim(),
+            stderr: String(result.stderr || '').trim(),
+            error: result.error?.message || null
+        });
+    }
+
+    return attempts;
+}
+
 function removeDirectory(targetPath) {
     const normalized = path.resolve(String(targetPath));
 
@@ -51,21 +120,54 @@ function removeDirectory(targetPath) {
         };
     }
 
+    const attempts = [];
+
     try {
-        fs.rmSync(normalized, { recursive: true, force: true });
+        fs.rmSync(normalized, {
+            recursive: true,
+            force: true,
+            maxRetries: 8,
+            retryDelay: 250
+        });
+        attempts.push({
+            label: 'fs-rmSync',
+            ok: !pathExists(normalized)
+        });
+    } catch (err) {
+        attempts.push({
+            label: 'fs-rmSync',
+            ok: false,
+            error: err?.message || String(err)
+        });
+    }
+
+    if (pathExists(normalized) && process.platform === 'win32') {
+        attempts.push(...runWindowsDirectoryRemovalFallback(normalized));
+    }
+
+    if (!pathExists(normalized)) {
         return {
             path: normalized,
             removed: true,
-            skipped: false
-        };
-    } catch (err) {
-        return {
-            path: normalized,
-            removed: false,
             skipped: false,
-            reason: err?.message || String(err)
+            attempts
         };
     }
+
+    const remainingEntries = getRemainingEntriesPreview(normalized);
+    const lastError = attempts
+        .map((attempt) => attempt?.error || attempt?.stderr || null)
+        .filter(Boolean)
+        .pop();
+
+    return {
+        path: normalized,
+        removed: false,
+        skipped: false,
+        reason: lastError || 'diretorio_persistiu_apos_tentativas',
+        remainingEntries,
+        attempts
+    };
 }
 
 function runCommand(command, args = [], options = {}) {
@@ -265,14 +367,15 @@ async function resetMyZapEnvironment(options = {}) {
         }
     });
 
-    const errors = [];
+    const warnings = [];
+    const fatalErrors = [];
 
     try {
         // 1. Matar child process rastreado
         try {
             killMyZapProcess();
         } catch (err) {
-            errors.push(`killMyZapProcess: ${err?.message || String(err)}`);
+            warnings.push(`killMyZapProcess: ${err?.message || String(err)}`);
         }
 
         // 2. Kill processos nas portas com retry
@@ -295,7 +398,7 @@ async function resetMyZapEnvironment(options = {}) {
             if (stillInUse) {
                 const msg = `Porta ${port} ainda em uso apos ${KILL_RETRY_ATTEMPTS} tentativas de kill`;
                 warn(msg, { metadata: { area: 'resetEnvironment', port } });
-                errors.push(msg);
+                fatalErrors.push(msg);
             }
         }
 
@@ -306,6 +409,30 @@ async function resetMyZapEnvironment(options = {}) {
 
         // 3. Remover diretorios
         const directoryResults = directories.map((dir) => removeDirectory(dir));
+        directoryResults.forEach((result) => {
+            if (result.removed) {
+                return;
+            }
+
+            if (result.skipped && result.reason === 'nao_existe') {
+                return;
+            }
+
+            const remainingInfo = result.remainingEntries?.length
+                ? ` Itens restantes: ${result.remainingEntries.join(', ')}`
+                : '';
+            const message = result.skipped
+                ? `Diretorio ignorado no reset: ${result.path} (${result.reason || 'motivo_desconhecido'})`
+                : `Falha ao remover diretorio ${result.path}: ${result.reason || 'motivo_desconhecido'}.${remainingInfo}`;
+
+            warn(message, {
+                metadata: {
+                    area: 'resetEnvironment',
+                    directoryResult: result
+                }
+            });
+            fatalErrors.push(message.trim());
+        });
 
         // 4. Limpar store
         const clearedKeys = clearMyZapStoreKeys();
@@ -327,14 +454,22 @@ async function resetMyZapEnvironment(options = {}) {
                 message: 'Remocao de ferramentas solicitada mas nao confirmada pelo usuario.'
             };
         }
+        if (toolsResult?.status === 'warning' && toolsResult?.message) {
+            warnings.push(toolsResult.message);
+        }
 
         // Transitar para idle
         forceTransition('idle', { reason: 'reset_completo' });
 
+        const allWarnings = [...warnings, ...fatalErrors];
+        const status = fatalErrors.length > 0 ? 'error' : warnings.length > 0 ? 'warning' : 'success';
+
         const response = {
-            status: errors.length > 0 ? 'warning' : 'success',
-            message: errors.length > 0
-                ? `Reset executado com avisos: ${errors.join('; ')}`
+            status,
+            message: fatalErrors.length > 0
+                ? 'Falha ao remover completamente o ambiente local do MyZap.'
+                : warnings.length > 0
+                    ? `Reset executado com avisos: ${warnings.join('; ')}`
                 : removeTools
                     ? 'Reset completo executado. Verifique remocao de Git/Node nos detalhes.'
                     : 'Ambiente local do MyZap resetado com sucesso.',
@@ -343,7 +478,8 @@ async function resetMyZapEnvironment(options = {}) {
                 ports: portsResult,
                 clearedKeys,
                 tools: toolsResult,
-                warnings: errors
+                warnings: allWarnings,
+                fatalErrors
             }
         };
 
@@ -354,7 +490,9 @@ async function resetMyZapEnvironment(options = {}) {
                 directoryResults,
                 portsResult,
                 toolsStatus: toolsResult?.status || null,
-                warnings: errors
+                warnings,
+                fatalErrors,
+                finalStatus: status
             }
         });
 

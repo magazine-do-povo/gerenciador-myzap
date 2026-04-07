@@ -7,7 +7,8 @@ const {
   BrowserWindow,
   Menu,
   Notification,
-  ipcMain
+  ipcMain,
+  shell
 } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
@@ -38,6 +39,7 @@ const { createSettings } = require('./core/windows/settings');
 const { openLogViewer } = require('./core/windows/logViewer');
 const { createPainelMyZap } = require('./core/windows/painelMyZap');
 const { createFilaMyZap } = require('./core/windows/filaMyZap');
+const { createManualSetupWindow } = require('./core/windows/manualSetup');
 const trayManager = require('./core/windows/tray');
 const { registerMyZapHandlers } = require('./core/ipc/myzap');
 const { attachAutoUpdaterHandlers, checkForUpdates } = require('./core/updater');
@@ -53,6 +55,10 @@ const {
 const { clearProgress, getCurrentProgress, finishProgressSuccess } = require('./core/myzap/progress');
 const { killProcessesOnPort, isPortInUse, isLocalHttpServiceReachable } = require('./core/myzap/processUtils');
 const { killMyZapProcess } = require('./core/myzap/iniciarMyZap');
+const {
+  MYZAP_REPO_WEB_URL,
+  ensureManualSetupGuideFile
+} = require('./core/myzap/manualSetupSupport');
 const deleteSession = require('./core/myzap/api/deleteSession');
 const { info: myzapInfo, warn: myzapWarn, error: myzapError } = require('./core/myzap/myzapLogger');
 
@@ -246,6 +252,13 @@ function isMyZapServiceAtivo() {
     || getTokenSyncWatcherStatus().ativo
     || getWhatsappQueueWatcherStatus().ativo
   );
+}
+
+function buildManualSetupLink(kind, info) {
+  if (kind === 'node') return info.nodeDownloadUrl;
+  if (kind === 'git') return info.gitDownloadUrl;
+  if (kind === 'repo') return MYZAP_REPO_WEB_URL;
+  return '';
 }
 
 function clearQueueAutoStartTimer() {
@@ -691,6 +704,7 @@ if (!hasSingleInstanceLock) {
         updateMyZapNow,
         createPainelMyZap,
         createFilaMyZap,
+        createManualSetupWindow,
         openLogViewer,
         abrirPastaLogs,
         checkUpdates: handleUpdateCheck
@@ -746,6 +760,94 @@ if (!hasSingleInstanceLock) {
   });
 
   ipcMain.handle('settings:get', (_e, key) => store.get(key));
+  ipcMain.handle('myzap:getManualSetupInfo', async () => {
+    try {
+      const info = ensureManualSetupGuideFile();
+      return {
+        status: 'success',
+        data: info
+      };
+    } catch (error) {
+      warn('Falha ao montar ajuda manual do MyZap', {
+        metadata: { error }
+      });
+      return {
+        status: 'error',
+        message: error.message || String(error)
+      };
+    }
+  });
+  ipcMain.handle('myzap:openManualSetupGuide', async () => {
+    try {
+      const info = ensureManualSetupGuideFile();
+      const openError = await shell.openPath(info.guideFilePath);
+      if (openError) {
+        return {
+          status: 'error',
+          message: `Nao foi possivel abrir o arquivo TXT: ${openError}`
+        };
+      }
+
+      return {
+        status: 'success',
+        message: 'Arquivo TXT de ajuda aberto no sistema.',
+        path: info.guideFilePath
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error.message || String(error)
+      };
+    }
+  });
+  ipcMain.handle('myzap:openManualSetupTargetDirectory', async () => {
+    try {
+      const info = ensureManualSetupGuideFile();
+      require('fs').mkdirSync(info.targetDir, { recursive: true });
+      const openError = await shell.openPath(info.targetDir);
+      if (openError) {
+        return {
+          status: 'error',
+          message: `Nao foi possivel abrir a pasta do MyZap: ${openError}`
+        };
+      }
+
+      return {
+        status: 'success',
+        message: 'Pasta alvo do MyZap aberta no sistema.',
+        path: info.targetDir
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error.message || String(error)
+      };
+    }
+  });
+  ipcMain.handle('myzap:openManualSetupLink', async (_e, kind) => {
+    try {
+      const info = ensureManualSetupGuideFile();
+      const url = buildManualSetupLink(kind, info);
+      if (!url) {
+        return {
+          status: 'error',
+          message: 'Link solicitado nao e suportado.'
+        };
+      }
+
+      await shell.openExternal(url);
+      return {
+        status: 'success',
+        message: 'Link aberto no navegador padrao.',
+        url
+      };
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error.message || String(error)
+      };
+    }
+  });
   ipcMain.handle('myzap:getCapabilitySnapshot', () => getCapabilitySnapshotPayload(store));
   ipcMain.handle('myzap:saveCapabilityPreferences', async (_e, preferences = {}) => {
     const result = saveCapabilityPreferences(preferences, store);

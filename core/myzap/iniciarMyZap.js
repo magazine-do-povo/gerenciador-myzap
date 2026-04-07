@@ -1,4 +1,4 @@
-const { spawn } = require('child_process');
+const { execSync, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { error: logError, info, warn } = require('./myzapLogger');
@@ -79,11 +79,23 @@ function killMyZapProcess() {
 
   try {
     const { pid } = myzapChildProcess;
-    myzapChildProcess.kill('SIGTERM');
-    info('killMyZapProcess: SIGTERM enviado ao child process do MyZap', {
-      metadata: { area: 'iniciarMyZap', pid },
-    });
+    if (process.platform === 'win32' && pid) {
+      execSync(`taskkill /T /F /PID ${pid}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+      info('killMyZapProcess: taskkill /T /F executado para a arvore do MyZap', {
+        metadata: { area: 'iniciarMyZap', pid },
+      });
+    } else {
+      myzapChildProcess.kill('SIGTERM');
+      info('killMyZapProcess: SIGTERM enviado ao child process do MyZap', {
+        metadata: { area: 'iniciarMyZap', pid },
+      });
+    }
   } catch (err) {
+    try {
+      myzapChildProcess.kill('SIGKILL');
+    } catch (_killErr) {
+      // melhor esforco
+    }
     warn('killMyZapProcess: falha ao matar child process', {
       metadata: { area: 'iniciarMyZap', error: getErrorMessage(err) },
     });
