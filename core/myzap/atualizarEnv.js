@@ -1,5 +1,5 @@
 const { iniciarMyZap } = require('./iniciarMyZap');
-const { info, warn, error } = require('./myzapLogger');
+const { info, warn, error } = require('./myzapLogger').forArea('install');
 const { killProcessesOnPort, isPortInUse } = require('./processUtils');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');

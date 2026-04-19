@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const extractZip = require('extract-zip');
-const { info, warn, error } = require('./myzapLogger');
+const { info, warn, error } = require('./myzapLogger').forArea('runtime');
 
 const MAX_REDIRECTS = 5;
 const MINIMUM_NODE_VERSION = '20.18.1';

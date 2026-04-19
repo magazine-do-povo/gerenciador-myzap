@@ -56,13 +56,6 @@ const { clearProgress, getCurrentProgress, finishProgressSuccess } = require('./
 const { killProcessesOnPort, isPortInUse, isLocalHttpServiceReachable } = require('./core/myzap/processUtils');
 const { killMyZapProcess } = require('./core/myzap/iniciarMyZap');
 const {
-  DEFAULT_EXTERNAL_START_TASK_NAME,
-  getExternalMyZapSupportState,
-  installExternalMyZapAutoStart,
-  removeExternalMyZapAutoStart,
-  startExternalMyZapNow,
-} = require('./core/myzap/externalRuntimeSupport');
-const {
   MYZAP_REPO_WEB_URL,
   ensureManualSetupGuideFile
 } = require('./core/myzap/manualSetupSupport');
@@ -87,8 +80,6 @@ const store = new Store({
     myzap_sessionName: '',
     myzap_apiToken: '',
     myzap_envContent: '',
-    myzap_localStartMode: 'automatic',
-    myzap_localStartCommand: 'start',
     myzap_capabilityIaConfigMode: 'auto',
     myzap_capabilityTokenSyncMode: 'auto',
     myzap_capabilityPassiveStatusMode: 'auto',
@@ -142,86 +133,8 @@ function getModoIntegracaoMyZap() {
   return String(store.get('myzap_modoIntegracao') || 'local').trim().toLowerCase() || 'local';
 }
 
-function normalizeMyZapLocalStartMode(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'manual' ? 'manual' : 'automatic';
-}
-
-function normalizeMyZapLocalStartCommand(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return ['start', 'dev'].includes(normalized) ? normalized : 'auto';
-}
-
-function getMyZapLocalStartMode() {
-  return normalizeMyZapLocalStartMode(store.get('myzap_localStartMode'));
-}
-
-function getMyZapLocalStartCommand() {
-  return normalizeMyZapLocalStartCommand(store.get('myzap_localStartCommand'));
-}
-
-function isMyZapManualStartMode() {
-  return getMyZapLocalStartMode() === 'manual';
-}
-
 function getMyZapDirectory() {
   return String(store.get('myzap_diretorio') || '').trim();
-}
-
-function getMyZapExternalCommand() {
-  const preferred = getMyZapLocalStartCommand();
-
-  if (isMyZapManualStartMode()) {
-    return preferred === 'dev' ? 'npm run dev' : 'npm run dev';
-  }
-
-  return preferred === 'dev' ? 'npm run dev' : 'npm start';
-}
-
-function getExternalMyZapTrayState() {
-  const supportState = getExternalMyZapSupportState(DEFAULT_EXTERNAL_START_TASK_NAME);
-  return {
-    ...supportState,
-    manualMode: isMyZapManualStartMode(),
-    localMode: isMyZapModoLocal(),
-    configuredDir: Boolean(getMyZapDirectory()),
-  };
-}
-
-async function startExternalMyZapFlow(reason = 'manual_external_start') {
-  const dirPath = getMyZapDirectory();
-  if (!dirPath) {
-    return {
-      status: 'error',
-      message: 'Diretorio do MyZap nao configurado no gerenciador.',
-    };
-  }
-
-  return startExternalMyZapNow(dirPath, getMyZapExternalCommand(), reason);
-}
-
-async function installExternalMyZapAutoStartFlow() {
-  const dirPath = getMyZapDirectory();
-  if (!dirPath) {
-    return {
-      status: 'error',
-      message: 'Diretorio do MyZap nao configurado no gerenciador.',
-    };
-  }
-
-  const result = await installExternalMyZapAutoStart(
-    dirPath,
-    getMyZapExternalCommand(),
-    DEFAULT_EXTERNAL_START_TASK_NAME
-  );
-  rebuildTrayMenu();
-  return result;
-}
-
-async function removeExternalMyZapAutoStartFlow() {
-  const result = await removeExternalMyZapAutoStart(DEFAULT_EXTERNAL_START_TASK_NAME);
-  rebuildTrayMenu();
-  return result;
 }
 
 function isMyZapModoLocal() {
@@ -507,39 +420,10 @@ async function ensureMyZapLocalRuntime(trigger = 'watchdog') {
       };
     }
 
-    if (isMyZapManualStartMode()) {
-      const externalStartResult = await startExternalMyZapFlow(`ensure:${trigger}`);
-      if (externalStartResult.status === 'success') {
-        myzapInfo('MyZap local em modo manual. Disparo externo solicitado pelo gerenciador.', {
-          metadata: {
-            trigger,
-            localStartMode: getMyZapLocalStartMode(),
-            localStartCommand: getMyZapLocalStartCommand(),
-            externalStartResult,
-          }
-        });
-
-        return {
-          ...externalStartResult,
-          manualExternalStart: true,
-        };
-      }
-
-      myzapWarn('Falha ao solicitar start externo do MyZap em modo manual', {
-        metadata: {
-          trigger,
-          externalStartResult,
-        }
-      });
-      return externalStartResult;
-    }
-
     myzapInfo('MyZap auto-ensure: porta local fechada, tentando iniciar automaticamente', {
       metadata: {
         trigger,
         modo: getModoIntegracaoMyZap(),
-        localStartMode: getMyZapLocalStartMode(),
-        localStartCommand: getMyZapLocalStartCommand(),
       }
     });
 
@@ -571,12 +455,7 @@ async function toggleMyzap() {
     });
   } else {
     applyMyZapRuntimeByMode('manual_toggle_start');
-    if (isMyZapModoLocal() && isMyZapManualStartMode()) {
-      const result = await startExternalMyZapFlow('tray_toggle_manual');
-      toast(result.message || 'Disparo externo do MyZap solicitado.');
-    } else {
-      toast('Servico MyZap iniciado');
-    }
+    toast('Servico MyZap iniciado');
     info('Servico MyZap iniciado via toggle', {
       metadata: { status: 'iniciado' }
     });
@@ -650,23 +529,6 @@ async function autoStartMyZap() {
 
   if (store.get('myzap_userRemovedLocal') === true) {
     myzapInfo('MyZap: auto-start ignorado (usuario removeu instalacao local previamente).');
-    return;
-  }
-
-  if (isMyZapModoLocal() && isMyZapManualStartMode()) {
-    myzapInfo('MyZap: auto-start local ignorado por preferencia de inicializacao manual.', {
-      metadata: {
-        localStartMode: getMyZapLocalStartMode(),
-        localStartCommand: getMyZapLocalStartCommand(),
-      }
-    });
-    const result = await startExternalMyZapFlow('auto_start_manual_mode');
-    if (result.status !== 'success') {
-      myzapWarn('Falha ao solicitar start externo do MyZap no startup manual', {
-        metadata: { result }
-      });
-    }
-    applyMyZapRuntimeByMode('auto_start_manual_mode');
     return;
   }
 
@@ -846,22 +708,6 @@ if (!hasSingleInstanceLock) {
       {
         createSettings,
         toggleMyzap,
-        startExternalMyZapNow: async () => {
-          const result = await startExternalMyZapFlow('tray_start_now');
-          toast(result.message || 'Disparo externo do MyZap solicitado.');
-          return result;
-        },
-        installExternalMyZapAutoStart: async () => {
-          const result = await installExternalMyZapAutoStartFlow();
-          toast(result.message || 'Auto inicio externo do MyZap atualizado.');
-          return result;
-        },
-        removeExternalMyZapAutoStart: async () => {
-          const result = await removeExternalMyZapAutoStartFlow();
-          toast(result.message || 'Auto inicio externo do MyZap atualizado.');
-          return result;
-        },
-        getExternalMyZapState: getExternalMyZapTrayState,
         updateMyZapNow,
         createPainelMyZap,
         createFilaMyZap,
@@ -1026,48 +872,7 @@ if (!hasSingleInstanceLock) {
       status: 'success',
       portActive,
       httpActive,
-      isAvailable: Boolean(portActive || httpActive),
-      localStartMode: getMyZapLocalStartMode(),
-      localStartCommand: getMyZapLocalStartCommand()
-    };
-  });
-  ipcMain.handle('myzap:startExternalNow', async () => startExternalMyZapFlow('renderer_manual_button'));
-  ipcMain.handle('myzap:installExternalAutoStart', async () => installExternalMyZapAutoStartFlow());
-  ipcMain.handle('myzap:removeExternalAutoStart', async () => removeExternalMyZapAutoStartFlow());
-  ipcMain.handle('myzap:getExternalAutoStartState', async () => getExternalMyZapTrayState());
-  ipcMain.handle('myzap:saveLocalStartPreferences', async (_e, preferences = {}) => {
-    const localStartMode = normalizeMyZapLocalStartMode(preferences.localStartMode || preferences.startMode);
-    const requestedStartCommand = normalizeMyZapLocalStartCommand(preferences.localStartCommand || preferences.startCommand);
-    const localStartCommand = localStartMode === 'manual' ? 'dev' : requestedStartCommand;
-
-    store.set({
-      myzap_localStartMode: localStartMode,
-      myzap_localStartCommand: localStartCommand
-    });
-
-    myzapInfo('Preferencias locais de inicializacao do MyZap atualizadas', {
-      metadata: {
-        localStartMode,
-        localStartCommand
-      }
-    });
-
-    applyMyZapRuntimeByMode('local_start_preferences_saved');
-    let externalStartResult = null;
-    if (isMyZapModoLocal()) {
-      const runtimeResult = await ensureMyZapLocalRuntime('local_start_preferences_saved');
-      if (localStartMode === 'manual') {
-        externalStartResult = runtimeResult;
-      }
-    }
-    rebuildTrayMenu();
-
-    return {
-      status: 'success',
-      localStartMode,
-      localStartCommand,
-      manualStart: localStartMode === 'manual',
-      externalStartResult,
+      isAvailable: Boolean(portActive || httpActive)
     };
   });
   registerMyZapHandlers(ipcMain);

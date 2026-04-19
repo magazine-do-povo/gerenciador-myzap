@@ -10,7 +10,7 @@
  * Listeners sao notificados a cada mudanca de estado (IPC push no main.js).
  */
 
-const { info, warn, debug } = require('./myzapLogger');
+const { info, warn, debug } = require('./myzapLogger').forArea('runtime');
 
 const VALID_STATES = [
     'idle',

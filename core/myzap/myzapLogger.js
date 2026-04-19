@@ -1,31 +1,19 @@
-const baseLogger = require('../utils/logger');
+const { createLogger } = require('../utils/logger');
 
-function withMyZapChannel(options = {}) {
-    return {
-        ...options,
-        channel: 'myzap'
-    };
-}
+const DEFAULT_CHANNEL = 'myzap-runtime';
 
-function info(message, options = {}) {
-    baseLogger.info(message, withMyZapChannel(options));
-}
+const defaultLogger = createLogger(DEFAULT_CHANNEL);
 
-function warn(message, options = {}) {
-    baseLogger.warn(message, withMyZapChannel(options));
-}
-
-function error(message, options = {}) {
-    baseLogger.error(message, withMyZapChannel(options));
-}
-
-function debug(message, options = {}) {
-    baseLogger.debug(message, withMyZapChannel(options));
+function forArea(area) {
+    if (!area) return defaultLogger;
+    const normalized = String(area).toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+    return createLogger(`myzap-${normalized}`);
 }
 
 module.exports = {
-    info,
-    warn,
-    error,
-    debug
+    info: defaultLogger.info,
+    warn: defaultLogger.warn,
+    error: defaultLogger.error,
+    debug: defaultLogger.debug,
+    forArea
 };

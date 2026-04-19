@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { info, warn, error } = require('./myzapLogger');
+const { info, warn, error } = require('./myzapLogger').forArea('install');
 
 function getBundledEnvPath() {
     return path.join(__dirname, 'configs', '.env');

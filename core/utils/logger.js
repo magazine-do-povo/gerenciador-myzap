@@ -6,8 +6,19 @@ const RETENCAO_DIAS = 7;
 const MAX_FILE_BYTES = 3 * 1024 * 1024; // 3 MB por arquivo antes de rotacionar
 const LOG_DIR = path.join(os.tmpdir(), 'gerenciador-myzap', 'logs');
 const WRITE_PLAIN_LOG = false;
+
+// Canais conhecidos: cada canal vira um arquivo separado por dia
+// (formato: YYYY-MM-DD-<prefixo>.jsonl).
 const LOG_CHANNELS = {
   system: 'log-sistema',
+  updater: 'log-updater',
+  'myzap-runtime': 'log-myzap-runtime',
+  'myzap-install': 'log-myzap-install',
+  'myzap-api': 'log-myzap-api',
+  'myzap-watcher': 'log-myzap-watcher',
+  'myzap-backend': 'log-myzap-backend',
+  'myzap-ipc': 'log-myzap-ipc',
+  // Compatibilidade com canal antigo (modulos nao migrados):
   myzap: 'log-myzap'
 };
 
@@ -17,6 +28,13 @@ const LEVEL_LABEL = {
   info: 'INFO',
   debug: 'DEBUG'
 };
+
+function sanitizeChannelName(channel) {
+  return String(channel || 'system')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'system';
+}
 
 function ensureLogDir() {
   if (!fs.existsSync(LOG_DIR)) {
@@ -38,7 +56,7 @@ function formatTimestamp(date = new Date()) {
 
 function getLogFilePath(channel = 'system', extension = 'log') {
   ensureLogDir();
-  const prefix = LOG_CHANNELS[channel] || LOG_CHANNELS.system;
+  const prefix = LOG_CHANNELS[channel] || `log-${sanitizeChannelName(channel)}`;
   const date = new Date().toISOString().split('T')[0];
   return path.join(LOG_DIR, `${date}-${prefix}.${extension}`);
 }
@@ -111,6 +129,22 @@ const warn = (message, options = {}) => log(message, { ...options, level: 'warn'
 const error = (message, options = {}) => log(message, { ...options, level: 'error' });
 const debug = (message, options = {}) => log(message, { ...options, level: 'debug' });
 
+/**
+ * Cria um logger preso a um canal especifico. Cada canal vira um arquivo
+ * separado por dia, evitando misturar eventos de areas diferentes.
+ *   const log = createLogger('myzap-install');
+ *   log.info('Clonando repositorio', { metadata: { ... } });
+ */
+function createLogger(channel) {
+  const safe = LOG_CHANNELS[channel] ? channel : sanitizeChannelName(channel);
+  return {
+    info: (message, options = {}) => log(message, { ...options, channel: safe, level: 'info' }),
+    warn: (message, options = {}) => log(message, { ...options, channel: safe, level: 'warn' }),
+    error: (message, options = {}) => log(message, { ...options, channel: safe, level: 'error' }),
+    debug: (message, options = {}) => log(message, { ...options, channel: safe, level: 'debug' })
+  };
+}
+
 function limparLogsAntigos() {
   const limite = Date.now() - RETENCAO_DIAS * 24 * 60 * 60 * 1000;
   ensureLogDir();
@@ -148,6 +182,7 @@ module.exports = {
   warn,
   error,
   debug,
+  createLogger,
   abrirPastaLogs,
   getCaminhoLogs,
   getLogDir,

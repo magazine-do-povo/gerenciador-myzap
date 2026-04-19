@@ -1,7 +1,7 @@
 {
   "name": "gerenciador-myzap",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.5.7",
+  "version": "1.5.8",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
@@ -13,15 +13,16 @@
     "start": "electron .",
     "dev": "nodemon --exec electron .",
     "build:icons": "powershell -ExecutionPolicy Bypass -File scripts/generate-windows-icon.ps1",
-    "prepack": "pnpm run build:icons",
+    "build:wincodesign": "powershell -ExecutionPolicy Bypass -File scripts/prepare-wincodesign-cache.ps1",
+    "prepack": "pnpm run build:icons && pnpm run build:wincodesign",
     "pack": "electron-builder --dir",
-    "prebuild": "pnpm run build:icons",
+    "prebuild": "pnpm run build:icons && pnpm run build:wincodesign",
     "build": "electron-builder",
-    "predist": "pnpm run build:icons",
+    "predist": "pnpm run build:icons && pnpm run build:wincodesign",
     "dist": "electron-builder",
-    "predist:win32": "pnpm run build:icons",
+    "predist:win32": "pnpm run build:icons && pnpm run build:wincodesign",
     "dist:win32": "electron-builder --win --ia32 --config.directories.output=dist/win32",
-    "predist:win64": "pnpm run build:icons",
+    "predist:win64": "pnpm run build:icons && pnpm run build:wincodesign",
     "dist:win64": "electron-builder --win --x64 --config.directories.output=dist/win64",
     "dist:linux": "electron-builder --linux AppImage deb",
     "postinstall": "electron-builder install-app-deps"
@@ -52,18 +53,6 @@
     "productName": "gerenciador-myzap",
     "asarUnpack": [
       "node_modules/pnpm/**"
-    ],
-    "extraResources": [
-      {
-        "from": "scripts",
-        "to": "support-scripts",
-        "filter": [
-          "run-myzap-dev-background.cmd",
-          "start-myzap-background.ps1",
-          "install-myzap-dev-autostart.cmd",
-          "remove-myzap-dev-autostart.cmd"
-        ]
-      }
     ],
     "directories": {
       "output": "dist"

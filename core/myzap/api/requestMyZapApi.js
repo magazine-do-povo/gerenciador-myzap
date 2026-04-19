@@ -1,5 +1,5 @@
 const Store = require('electron-store');
-const { debug, warn } = require('../myzapLogger');
+const { debug, warn } = require('../myzapLogger').forArea('api');
 
 const store = new Store();
 const DEFAULT_BASE_URLS = ['http://127.0.0.1:5555/', 'http://localhost:5555/'];

@@ -1,7 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const Store = require('electron-store');
-const { warn, info } = require('../myzap/myzapLogger');
+const { BrowserWindow } = require('electron');
+const { warn, info } = require('../myzap/myzapLogger').forArea('ipc');
 const { getLogDir } = require('../utils/logger');
 const clonarRepositorio = require('../myzap/clonarRepositorio');
 const verificarDiretorio = require('../myzap/verificarDiretorio');
@@ -12,7 +13,7 @@ const deleteSession = require('../myzap/api/deleteSession');
 const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const sendTestMessage = require('../myzap/api/sendTestMessage');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
-const { iniciarMyZap } = require('../myzap/iniciarMyZap');
+const { iniciarMyZap, onMyZapChildExit } = require('../myzap/iniciarMyZap');
 const {
     prepareAutoConfig,
     getAutoConfigDebugSnapshot,
@@ -20,7 +21,7 @@ const {
 } = require('../myzap/autoConfig');
 const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
 const { getStateSnapshot } = require('../myzap/stateMachine');
-const { getPrivilegeStatus } = require('../myzap/processUtils');
+const { getPrivilegeStatus, killProcessesOnPort } = require('../myzap/processUtils');
 const {
     getUltimosEnviosMyZap,
     getUltimosPendentesMyZap,
@@ -94,6 +95,25 @@ function buildEnvContent(baseEnv, secrets = {}) {
 function registerMyZapHandlers(ipcMain) {
     info('IPC MyZap handlers registrados', {
         metadata: { area: 'ipcMyzap' }
+    });
+
+    // Broadcast para o renderer quando o child do MyZap finaliza, para a UI
+    // poder quebrar a espera imediatamente em vez de esperar timeout.
+    onMyZapChildExit((payload) => {
+        try {
+            for (const win of BrowserWindow.getAllWindows()) {
+                if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+                    win.webContents.send('myzap:childExited', payload);
+                }
+            }
+            info('Evento myzap:childExited propagado ao renderer', {
+                metadata: { area: 'ipcMyzap', exitCode: payload && payload.exitCode },
+            });
+        } catch (err) {
+            warn('Falha ao propagar myzap:childExited', {
+                metadata: { area: 'ipcMyzap', error: err && err.message }
+            });
+        }
     });
 
     ipcMain.handle('myzap:checkDirectoryHasFiles', async (event, dirPath) => {
@@ -205,6 +225,37 @@ function registerMyZapHandlers(ipcMain) {
             return await ensureMyZapReadyAndStart({ forceRemote });
         } catch (error) {
             warn('Falha ao iniciar MyZap automaticamente via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    // Hard restart: mata processo na porta 5555 e reinicia o MyZap.
+    // Usado quando a sessao trava em INITIALIZING (Chromium puppeteer travado).
+    ipcMain.handle('myzap:hardRestart', async () => {
+        try {
+            info('IPC myzap:hardRestart recebido — matando porta 5555 e reiniciando', {
+                metadata: { area: 'ipcMyzap' }
+            });
+            const killResult = killProcessesOnPort(5555);
+            info('Processos finalizados na porta 5555', {
+                metadata: { area: 'ipcMyzap', killed: killResult.killed, failed: killResult.failed }
+            });
+            // Pequena espera para o SO liberar a porta antes do re-spawn
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const startResult = await ensureMyZapReadyAndStart({ forceRemote: true });
+            return {
+                status: startResult?.status || 'success',
+                message: startResult?.message || 'MyZap reiniciado com sucesso.',
+                killed: killResult.killed,
+                startResult
+            };
+        } catch (error) {
+            warn('Falha em myzap:hardRestart', {
                 metadata: { error }
             });
             return {

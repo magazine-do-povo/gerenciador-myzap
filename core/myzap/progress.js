@@ -1,5 +1,5 @@
 const Store = require('electron-store');
-const { info, warn, debug } = require('./myzapLogger');
+const { info, warn, debug } = require('./myzapLogger').forArea('runtime');
 
 const store = new Store();
 const PROGRESS_KEY = 'myzap_progress';

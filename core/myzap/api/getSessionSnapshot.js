@@ -2,7 +2,7 @@ const Store = require('electron-store');
 const getConnectionStatus = require('./getConnectionStatus');
 const verifyRealStatus = require('./verifyRealStatus');
 const { parseSessionPayload, mergeSessionPayloads } = require('./sessionSnapshotParser');
-const { debug, warn } = require('../myzapLogger');
+const { debug, warn } = require('../myzapLogger').forArea('api');
 
 const store = new Store();
 const LAST_QR_SNAPSHOT_KEY = 'myzap_lastQrSnapshot';

@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const { spawn } = require('child_process');
-const { info, warn, error } = require('./myzapLogger');
+const { info, warn, error } = require('./myzapLogger').forArea('install');
 const {
   SYSTEM_NODE_VERSION,
   SYSTEM_GIT_VERSION,

@@ -1,5 +1,5 @@
 const Store = require('electron-store');
-const { info, warn, error, debug } = require('../myzap/myzapLogger');
+const { info, warn, error, debug } = require('../myzap/myzapLogger').forArea('watcher');
 const {
   isCapabilityEnabled,
   getCapabilityEntry

@@ -1,6 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const { error, debug, warn } = require('./myzapLogger');
+const { error, debug, warn } = require('./myzapLogger').forArea('install');
+const {
+  assertDependenciesHealthy,
+  readInstallOkMarker,
+} = require('./dependencyHealth');
 
 /**
  * Resolve o entry point do MyZap a partir do package.json.
@@ -59,21 +63,47 @@ async function verificarDiretorio(dirPath) {
       }
     }
 
-    // Verificar se node_modules existe (deps instaladas)
-    const nodeModulesPath = path.join(dirPath, 'node_modules');
-    if (!fs.existsSync(nodeModulesPath)) {
-      warn('Instalacao incompleta: node_modules nao encontrado', {
-        metadata: { area: 'verificarDiretorio', dirPath }
+    // Verificar se node_modules esta saudavel (deps instaladas e completas)
+    const health = assertDependenciesHealthy(dirPath);
+    if (!health.ok) {
+      warn('Instalacao incompleta detectada por dependencyHealth', {
+        metadata: {
+          area: 'verificarDiretorio',
+          dirPath,
+          reason: health.reason,
+          missingCount: (health.missing || []).length,
+          missingSample: (health.missing || []).slice(0, 8),
+        },
+      });
+      const detail = health.reason === 'dependencies_missing'
+        ? `${(health.missing || []).length} pacote(s) ausente(s)`
+        : health.reason;
+      return {
+        status: 'error',
+        needsReinstall: true,
+        code: 'DEPS_HEALTH_FAILED',
+        healthReason: health.reason,
+        missing: health.missing || [],
+        message: `Instalacao incompleta: ${detail}. Reinstalacao necessaria.`,
+      };
+    }
+
+    const marker = readInstallOkMarker(dirPath);
+    if (!marker) {
+      warn('Instalacao sem marker de conclusao (.gerenciador-myzap-install-ok)', {
+        metadata: { area: 'verificarDiretorio', dirPath },
       });
       return {
         status: 'error',
         needsReinstall: true,
-        message: 'Instalacao incompleta: dependencias nao instaladas. Reinstalacao necessaria.'
+        code: 'INSTALL_MARKER_MISSING',
+        message: 'Instalacao anterior nao foi finalizada corretamente. Reinstalacao necessaria.',
       };
     }
 
     return {
       status: 'success',
+      installMarker: marker,
       message: 'MyZap se encontra no diretorio configurado!'
     };
   } catch (err) {

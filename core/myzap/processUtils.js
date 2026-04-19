@@ -3,7 +3,7 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger');
+const { info: logInfo, warn: logWarn, debug: logDebug } = require('./myzapLogger').forArea('runtime');
 const {
   MINIMUM_NODE_VERSION,
   getPortableNodePath,
@@ -653,6 +653,33 @@ function getBundledPnpmCommand() {
   }
 }
 
+/**
+ * Executa "<runner> --version" e devolve a versao normalizada.
+ * Funciona tanto para pnpm bundled (node pnpm.cjs --version) quanto system pnpm.
+ * Retorna string vazia se falhar.
+ */
+function probeRunnerVersion(runner) {
+  if (!runner || !runner.command) {
+    return '';
+  }
+  try {
+    const args = [...(runner.prefixArgs || []), '--version'];
+    const result = spawnSync(runner.command, args, {
+      encoding: 'utf8',
+      shell: false,
+      windowsHide: true,
+      timeout: 15000,
+      env: runner.env || process.env,
+    });
+    if (result.error || result.status !== 0) {
+      return '';
+    }
+    return String(result.stdout || '').trim().split(/\r?\n/).pop() || '';
+  } catch (_err) {
+    return '';
+  }
+}
+
 async function commandExists(command) {
   return Boolean(await resolveCommandPath(command));
 }
@@ -725,25 +752,24 @@ function validateCommand(commandPath, args = ['--version']) {
 }
 
 async function getPnpmCommand() {
-  logInfo('Iniciando deteccao do gerenciador de pacotes (pnpm/npm)...', {
+  logInfo('Iniciando deteccao do gerenciador de pacotes (pnpm)...', {
     metadata: { area: 'processUtils', fase: 'getPnpmCommand' },
   });
 
-  let bundledRunner = getBundledPnpmCommand();
+  const bundledRunner = getBundledPnpmCommand();
   if (bundledRunner) {
-    logInfo('Usando pnpm empacotado (bundled)', {
-      metadata: { area: 'processUtils', source: 'bundled-pnpm' },
+    const version = probeRunnerVersion(bundledRunner);
+    if (version) {
+      logInfo('Usando pnpm empacotado (bundled)', {
+        metadata: { area: 'processUtils', source: 'bundled-pnpm', pnpmVersion: version },
+      });
+      return { ...bundledRunner, version };
+    }
+    logWarn('pnpm bundled localizado mas falhou em "--version"', {
+      metadata: { area: 'processUtils', cliPath: bundledRunner.prefixArgs && bundledRunner.prefixArgs[0] },
     });
-    return bundledRunner;
-  }
-
-  logDebug('pnpm empacotado nao disponivel', { metadata: { area: 'processUtils' } });
-
-  if (isElectronPackagedApp()) {
-    logWarn('App empacotado sem pnpm bundled ou Node.js compativel — nenhum runner disponivel', {
-      metadata: { area: 'processUtils' },
-    });
-    return null;
+  } else {
+    logDebug('pnpm empacotado nao disponivel', { metadata: { area: 'processUtils' } });
   }
 
   // Atualizar PATH no Windows antes de buscar comandos
@@ -754,17 +780,19 @@ async function getPnpmCommand() {
 
   const pnpmPath = await resolveCommandPath('pnpm');
   if (pnpmPath) {
-    if (validateCommand(pnpmPath, ['--version'])) {
+    const systemRunner = {
+      command: pnpmPath,
+      prefixArgs: [],
+      shell: false,
+      env: buildCleanEnvForChild(),
+      source: 'system-pnpm',
+    };
+    const version = probeRunnerVersion(systemRunner);
+    if (version) {
       logInfo('pnpm do sistema detectado e validado', {
-        metadata: { area: 'processUtils', source: 'system-pnpm', path: pnpmPath },
+        metadata: { area: 'processUtils', source: 'system-pnpm', path: pnpmPath, pnpmVersion: version },
       });
-      return {
-        command: pnpmPath,
-        prefixArgs: [],
-        shell: false,
-        env: buildCleanEnvForChild(),
-        source: 'system-pnpm',
-      };
+      return { ...systemRunner, version };
     }
     logWarn('pnpm encontrado no PATH mas falhou na validacao (--version)', {
       metadata: { area: 'processUtils', path: pnpmPath },
@@ -773,52 +801,16 @@ async function getPnpmCommand() {
     logDebug('pnpm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
   }
 
-  // npx vem com o npm e e a forma mais comum de rodar pnpm sem instalar globalmente
-  const npxPath = await resolveCommandPath('npx');
-  if (npxPath) {
-    if (validateCommand(npxPath, ['--version'])) {
-      logInfo('npx do sistema detectado e validado (sera usado para rodar pnpm)', {
-        metadata: { area: 'processUtils', source: 'system-npx', path: npxPath },
-      });
-      return {
-        command: npxPath,
-        prefixArgs: ['pnpm'],
-        shell: false,
-        env: buildCleanEnvForChild(),
-        source: 'system-npx',
-      };
-    }
-    logWarn('npx encontrado no PATH mas falhou na validacao', {
-      metadata: { area: 'processUtils', path: npxPath },
-    });
-  } else {
-    logDebug('npx nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
-  }
-
-  // npm disponivel mas npx nao (npm < 5.2) — tenta via npm exec
-  const npmPath = await resolveCommandPath('npm');
-  if (npmPath) {
-    if (validateCommand(npmPath, ['--version'])) {
-      logInfo('npm do sistema detectado e validado (sera usado via npm exec pnpm)', {
-        metadata: { area: 'processUtils', source: 'system-npm-exec', path: npmPath },
-      });
-      return {
-        command: npmPath,
-        prefixArgs: ['exec', 'pnpm', '--'],
-        shell: false,
-        env: buildCleanEnvForChild(),
-        source: 'system-npm-exec',
-      };
-    }
-    logWarn('npm encontrado no PATH mas falhou na validacao', {
-      metadata: { area: 'processUtils', path: npmPath },
-    });
-  } else {
-    logDebug('npm nao encontrado no PATH do sistema', { metadata: { area: 'processUtils' } });
-  }
-
-  logWarn('Nenhum gerenciador de pacotes (pnpm/npx/npm) encontrado ou funcional no sistema', {
-    metadata: { area: 'processUtils', platform: os.platform() },
+  // NAO usamos npx pnpm nem npm exec pnpm: ambos baixam pnpm em runtime,
+  // gerando versao nao-deterministica e divergencia de lockfile/store.
+  // Se chegamos aqui, e bug de empacotamento (asar.unpacked) ou ambiente quebrado.
+  logWarn('pnpm nao disponivel: bundled ausente e sem pnpm no sistema', {
+    metadata: {
+      area: 'processUtils',
+      platform: os.platform(),
+      packaged: isElectronPackagedApp(),
+      hint: 'Reinstalar o gerenciador (pnpm bundled em asar.unpacked) ou instalar pnpm no sistema (npm i -g pnpm).',
+    },
   });
   return null;
 }

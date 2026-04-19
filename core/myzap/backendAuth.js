@@ -1,5 +1,5 @@
 const Store = require('electron-store');
-const { info, warn } = require('./myzapLogger');
+const { info, warn } = require('./myzapLogger').forArea('backend');
 const { normalizeBaseUrl, sanitizeBackendApiUrl } = require('./capabilities');
 
 const store = new Store();

@@ -1,7 +1,7 @@
 const { requestMyZapApi } = require('./requestMyZapApi');
 const getConnectionStatus = require('./getConnectionStatus');
 const verifyRealStatus = require('./verifyRealStatus');
-const { debug, info, warn, error } = require('../myzapLogger');
+const { debug, info, warn, error } = require('../myzapLogger').forArea('api');
 
 const MIN_PHONE_DIGITS = 10;
 const MAX_PHONE_DIGITS = 15;

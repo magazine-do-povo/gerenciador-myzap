@@ -46,6 +46,8 @@ let myzapProgressPollTimer = null;
 let connectionStatusPollTimer = null;
 let qrPollingTimer = null;
 let qrPollingAttempts = 0;
+let sessionBootDeadline = 0;
+const SESSION_BOOT_GRACE_MS = 30 * 1000;
 let lastConfigDebugPayload = null;
 let currentCapabilityState = {
   preferences: {},
@@ -210,179 +212,6 @@ function needsAdminForLocalInstall(privilegeStatus = currentPrivilegeStatus) {
     privilegeStatus?.requiresAdminForLocalInstall
     && privilegeStatus?.needsAdminForLocalInstall
   );
-}
-
-function normalizeLocalStartMode(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return normalized === 'manual' ? 'manual' : 'automatic';
-}
-
-function normalizeLocalStartCommand(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return ['start', 'dev'].includes(normalized) ? normalized : 'auto';
-}
-
-function getLocalStartModeLabel(mode) {
-  return normalizeLocalStartMode(mode) === 'manual'
-    ? 'manual pela pasta do MyZap'
-    : 'automatica pelo gerenciador';
-}
-
-function getLocalStartCommandLabel(command) {
-  const normalized = normalizeLocalStartCommand(command);
-  if (normalized === 'start') return 'start';
-  if (normalized === 'dev') return 'dev';
-  return 'automatico';
-}
-
-function getLocalStartCommandExample(command) {
-  const normalized = normalizeLocalStartCommand(command);
-  if (normalized === 'dev') return 'pnpm run dev';
-  if (normalized === 'start') return 'pnpm start';
-  return 'pnpm start ou pnpm run dev';
-}
-
-async function getStoredLocalStartPreferences() {
-  const [localStartMode, localStartCommand] = await Promise.all([
-    window.api.getStore('myzap_localStartMode'),
-    window.api.getStore('myzap_localStartCommand')
-  ]);
-
-  return {
-    localStartMode: normalizeLocalStartMode(localStartMode),
-    localStartCommand: normalizeLocalStartCommand(localStartCommand)
-  };
-}
-
-function getLocalStartPreferencesFromForm() {
-  const localStartMode = normalizeLocalStartMode(document.getElementById('myzap-local-start-mode')?.value || 'automatic');
-  let localStartCommand = normalizeLocalStartCommand(document.getElementById('myzap-local-start-command')?.value || 'auto');
-
-  if (localStartMode === 'manual') {
-    localStartCommand = 'dev';
-  }
-
-  return {
-    localStartMode,
-    localStartCommand
-  };
-}
-
-function renderLocalStartPreferenceHelp(preferences = {}) {
-  const localStartMode = normalizeLocalStartMode(preferences.localStartMode);
-  const localStartCommand = normalizeLocalStartCommand(preferences.localStartCommand);
-  const help = document.getElementById('myzap-local-start-help');
-  if (!help) return;
-
-  if (localStartMode === 'manual') {
-    help.textContent = `Modo manual: o gerenciador vai disparar o MaisApp por fora com ${getLocalStartCommandExample(localStartCommand)}. Voce tambem pode usar o tray para iniciar agora ou ativar/remover o auto inicio externo.`;
-    return;
-  }
-
-  help.textContent = `Modo automatico: o gerenciador tenta subir a API local sozinho. Comando preferido salvo: ${getLocalStartCommandLabel(localStartCommand)}.`;
-}
-
-function updateStartServiceButtonLabel(localStartMode = 'automatic') {
-  const btnStart = document.getElementById('btn-start');
-  if (!btnStart) return;
-  btnStart.textContent = normalizeLocalStartMode(localStartMode) === 'manual'
-    ? 'Iniciar MaisApp por fora'
-    : 'Iniciar MyZap';
-}
-
-async function refreshExternalStartControls(preferences = getLocalStartPreferencesFromForm()) {
-  const actionsBox = document.getElementById('myzap-external-start-actions');
-  const stateText = document.getElementById('myzap-external-start-state');
-  const btnStartExternal = document.getElementById('btn-external-start-now');
-  const btnEnableAutoStart = document.getElementById('btn-external-autostart-enable');
-  const btnRemoveAutoStart = document.getElementById('btn-external-autostart-remove');
-
-  if (!actionsBox || !stateText || !btnStartExternal || !btnEnableAutoStart || !btnRemoveAutoStart) {
-    return;
-  }
-
-  const normalized = {
-    localStartMode: normalizeLocalStartMode(preferences.localStartMode),
-    localStartCommand: normalizeLocalStartCommand(preferences.localStartCommand)
-  };
-
-  if (normalized.localStartMode === 'manual') {
-    normalized.localStartCommand = 'dev';
-  }
-
-  if (!window.api?.getExternalMyZapAutoStartState) {
-    actionsBox.classList.add('d-none');
-    return;
-  }
-
-  try {
-    const state = await window.api.getExternalMyZapAutoStartState();
-    const shouldShow = Boolean(state?.available) && (normalized.localStartMode === 'manual' || state?.autoStartInstalled);
-    const hasConfiguredDir = Boolean(state?.configuredDir);
-    const autoStartInstalled = Boolean(state?.autoStartInstalled);
-
-    actionsBox.classList.toggle('d-none', !shouldShow);
-    if (!shouldShow) {
-      return;
-    }
-
-    btnStartExternal.disabled = !hasConfiguredDir;
-    btnEnableAutoStart.disabled = !hasConfiguredDir || autoStartInstalled;
-    btnRemoveAutoStart.disabled = !autoStartInstalled;
-
-    if (!hasConfiguredDir) {
-      stateText.textContent = 'Configure o diretorio do MyZap para liberar o start externo.';
-      return;
-    }
-
-    if (autoStartInstalled) {
-      stateText.textContent = `Auto inicio externo ativo. O gerenciador vai chamar ${getLocalStartCommandExample(normalized.localStartCommand)} no logon do Windows.`;
-      return;
-    }
-
-    stateText.textContent = `Start externo disponivel com ${getLocalStartCommandExample(normalized.localStartCommand)}. Use os botoes abaixo para testar agora ou ativar o auto inicio externo.`;
-  } catch (error) {
-    actionsBox.classList.toggle('d-none', normalized.localStartMode !== 'manual');
-    btnStartExternal.disabled = true;
-    btnEnableAutoStart.disabled = true;
-    btnRemoveAutoStart.disabled = true;
-    stateText.textContent = `Nao foi possivel consultar o start externo: ${error?.message || error}`;
-  }
-}
-
-function applyStoredLocalStartPreferencesToUi(preferences = {}) {
-  const normalized = {
-    localStartMode: normalizeLocalStartMode(preferences.localStartMode),
-    localStartCommand: normalizeLocalStartCommand(preferences.localStartCommand)
-  };
-
-  if (normalized.localStartMode === 'manual') {
-    normalized.localStartCommand = 'dev';
-  }
-
-  const localStartModeField = document.getElementById('myzap-local-start-mode');
-  const localStartCommandField = document.getElementById('myzap-local-start-command');
-
-  if (localStartModeField) localStartModeField.value = normalized.localStartMode;
-  if (localStartCommandField) localStartCommandField.value = normalized.localStartCommand;
-
-  renderLocalStartPreferenceHelp(normalized);
-  updateStartServiceButtonLabel(normalized.localStartMode);
-  refreshExternalStartControls(normalized).catch((error) => {
-    console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
-  });
-}
-
-async function saveLocalStartPreferencesFromUi() {
-  if (!window.api?.saveLocalStartPreferences) {
-    const fallback = getLocalStartPreferencesFromForm();
-    applyStoredLocalStartPreferencesToUi(fallback);
-    return { status: 'success', ...fallback };
-  }
-
-  const result = await window.api.saveLocalStartPreferences(getLocalStartPreferencesFromForm());
-  applyStoredLocalStartPreferencesToUi(result);
-  return result;
 }
 
 function setBadgeState(element, text, className) {
@@ -731,9 +560,7 @@ async function carregarDebugConfigApi() {
 function renderRuntimeInfo({
   modoIntegracao,
   lastSyncAt,
-  remoteConfigOk = true,
-  localStartMode = 'automatic',
-  localStartCommand = 'auto'
+  remoteConfigOk = true
 }) {
   const box = document.getElementById('myzap-runtime-info');
   if (!box) return;
@@ -744,8 +571,7 @@ function renderRuntimeInfo({
   box.innerHTML = `
     <div><strong>Modo atual:</strong> ${modoLabel}</div>
     <div><strong>Configuracao remota validada:</strong> ${remoteConfigOk ? 'sim' : 'nao'}</div>
-    <div><strong>Inicializacao local:</strong> ${getLocalStartModeLabel(localStartMode)}</div>
-    <div><strong>Comando preferido do runtime local:</strong> ${getLocalStartCommandLabel(localStartCommand)}</div>
+    <div><strong>Inicializacao local:</strong> automatica pelo gerenciador</div>
     <div><strong>Sincronizacao API -> gerenciador:</strong> a cada ${CONFIG_SYNC_INTERVAL_MS / 1000}s</div>
     <div><strong>Troca de modo no backend:</strong> aplicada automaticamente em ate ${CONFIG_SYNC_INTERVAL_MS / 1000}s</div>
     <div><strong>Tentativa de iniciar fila local:</strong> a cada ${QUEUE_POLL_INTERVAL_MS / 1000}s (somente modo local)</div>
@@ -829,17 +655,12 @@ async function refreshConfigFromApiAndRender() {
   const myzap_lastRemoteConfigSyncAt = (await window.api.getStore('myzap_lastRemoteConfigSyncAt')) ?? 0;
   const myzap_remoteConfigOk = Boolean(await window.api.getStore('myzap_remoteConfigOk'));
   const modoLocal = isModoLocal(myzap_modoIntegracao);
-  const localStartPreferences = await getStoredLocalStartPreferences();
-
-  applyStoredLocalStartPreferencesToUi(localStartPreferences);
 
   applyModoInfoBanner(myzap_modoIntegracao);
   renderRuntimeInfo({
     modoIntegracao: myzap_modoIntegracao,
     lastSyncAt: myzap_lastRemoteConfigSyncAt,
-    remoteConfigOk: myzap_remoteConfigOk,
-    localStartMode: localStartPreferences.localStartMode,
-    localStartCommand: localStartPreferences.localStartCommand
+    remoteConfigOk: myzap_remoteConfigOk
   });
   if (!myzap_remoteConfigOk) {
     setOnlineOnlyView(true, `Nao foi possivel validar a configuracao do MyZap na API neste momento. O painel local foi bloqueado para evitar decisao por cache. Verifique URL, usuario e senha nas Configuracoes e tente novamente.`);
@@ -974,17 +795,12 @@ async function loadConfigs() {
     const myzap_lastRemoteConfigSyncAt = (await window.api.getStore('myzap_lastRemoteConfigSyncAt')) ?? 0;
     const myzap_remoteConfigOk = Boolean(await window.api.getStore('myzap_remoteConfigOk'));
     const modoLocal = isModoLocal(myzap_modoIntegracao);
-    const localStartPreferences = await getStoredLocalStartPreferences();
-
-    applyStoredLocalStartPreferencesToUi(localStartPreferences);
 
     applyModoInfoBanner(myzap_modoIntegracao);
     renderRuntimeInfo({
       modoIntegracao: myzap_modoIntegracao,
       lastSyncAt: myzap_lastRemoteConfigSyncAt,
-      remoteConfigOk: myzap_remoteConfigOk,
-      localStartMode: localStartPreferences.localStartMode,
-      localStartCommand: localStartPreferences.localStartCommand
+      remoteConfigOk: myzap_remoteConfigOk
     });
     setOnlineOnlyView(
       !remoteConfigOk || !myzap_remoteConfigOk || !modoLocal,
@@ -1055,10 +871,6 @@ async function loadConfigs() {
           statusApi.textContent = 'MyZap local acessivel.';
           statusApi.classList.add('bg-success');
           btnStart.disabled = true;
-        } else if (localStartPreferences.localStartMode === 'manual') {
-          statusApi.textContent = `Modo manual ativo. Clique em "Iniciar MaisApp por fora" ou use o tray para disparar ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
-          statusApi.classList.add('bg-warning', 'text-dark');
-          btnStart.disabled = false;
         } else {
           statusApi.textContent = 'MyZap local parado. Clique em Iniciar MyZap.';
           statusApi.classList.add('bg-warning', 'text-dark');
@@ -1108,13 +920,48 @@ async function checkRealConnection() {
   const qrBox = document.getElementById('qrcode-box');
   const statusIndicator = document.querySelector('.status-indicator');
 
+  // Pre-check: se o servico local (porta 5555) ainda nao respondeu, nao adianta
+  // chamar verifyRealStatus — o fetch vai falhar e o usuario vera "Erro de conexao"
+  // mesmo quando o MyZap so esta subindo. Mostrar estado transitorio amarelo.
+  try {
+    const svc = await window.api.getLocalServiceStatus();
+    if (svc && !svc.isAvailable) {
+      statusIndicator.className = 'status-indicator waiting';
+      statusIndicator.textContent = 'Aguardando servico MyZap...';
+      qrBox.innerHTML = `
+        <div class="initializing-feedback">
+          <span class="spinner-border spinner-border-sm" role="status"></span>
+          Servico MyZap local ainda nao respondeu (porta 5555). Aguardando inicializacao...
+        </div>
+      `;
+      setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
+      setIaConfigVisibility(false);
+      return { isConnected: false, isQrWaiting: false, offline: true, response: null };
+    }
+  } catch (_svcErr) {
+    // Se getLocalServiceStatus falhar, seguir com o fluxo normal
+  }
+
   qrBox.innerHTML = `<span class="text-muted-small">Verificando status real...</span>`;
 
   try {
     const response = await window.api.verifyRealStatus();
 
-    if (!response.dbStatus && !response.status) {
-      throw new Error('Resposta invalida da API');
+    // verifyRealStatus retorna null quando o servico esta inacessivel (fetch falhou).
+    // Como ja validamos o servico acima, null aqui significa sessao ainda inicializando
+    // — tratar como estado transitorio amarelo, nao como erro.
+    if (!response || (!response.dbStatus && !response.status)) {
+      statusIndicator.className = 'status-indicator waiting';
+      statusIndicator.textContent = 'Sessao inicializando...';
+      qrBox.innerHTML = `
+        <div class="initializing-feedback">
+          <span class="spinner-border spinner-border-sm" role="status"></span>
+          MyZap respondeu mas a sessao ainda esta preparando. Aguarde o QR Code...
+        </div>
+      `;
+      setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
+      setIaConfigVisibility(false);
+      return { isConnected: false, isQrWaiting: false, response: null };
     }
 
     const {
@@ -1169,6 +1016,23 @@ async function checkRealConnection() {
 
     statusIndicator.className = 'status-indicator disconnected';
     statusIndicator.textContent = '❌ Desconectado';
+
+    // Durante o boot da sessao (apos clique em "Iniciar instancia" ou
+    // "Iniciar MyZap"), o MyZap pode responder com status sem sessao por alguns
+    // segundos antes de criar o cliente WhatsApp. Suavizar para amarelo.
+    if (Date.now() < sessionBootDeadline) {
+      statusIndicator.className = 'status-indicator waiting';
+      statusIndicator.textContent = 'Sessao inicializando...';
+      qrBox.innerHTML = `
+        <div class="initializing-feedback">
+          <span class="spinner-border spinner-border-sm" role="status"></span>
+          MyZap esta preparando a sessao do WhatsApp. Aguarde o QR Code...
+        </div>
+      `;
+      setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
+      setIaConfigVisibility(false);
+      return { isConnected: false, isQrWaiting: false, response };
+    }
 
     // Traduzir mensagem tecnica da API para algo amigavel
     var displayMessage = 'QR Code nao disponivel';
@@ -1313,6 +1177,55 @@ function extractQrCode(payload) {
   return '';
 }
 // ---- Fim helpers ----
+
+// ---- Mapeamento de codigos de erro do backend para mensagens amigaveis ----
+const MYZAP_ERROR_MESSAGES = {
+  PORT_OCCUPIED_BY_OTHER: 'A porta 5555 esta ocupada por outro processo (nao e o MyZap). Feche o processo manualmente ou reinicie o computador antes de iniciar novamente.',
+  PORT_BUSY_AFTER_KILL: 'Nao foi possivel liberar a porta 5555. Reinicie o computador para finalizar processos travados.',
+  INSTALL_DEPS_FAILED: 'Falha ao instalar dependencias do MyZap. Verifique conectividade com a internet ou execute "Reinstalar" para limpeza completa.',
+  DEPS_HEALTH_FAILED: 'O diretorio do MyZap esta com node_modules incompleto ou corrompido. Use "Reinstalar" para refazer o ambiente.',
+  INSTALL_MARKER_MISSING: 'Instalacao anterior incompleta detectada. Execute "Reinstalar" para finalizar a configuracao.',
+  INITIALIZING_STUCK: 'A sessao do WhatsApp travou ao inicializar (Chromium nao respondeu em 45s). Clique em "Recuperar automaticamente" abaixo para matar o servico e reiniciar — equivalente a matar manualmente e rodar de novo.',
+};
+
+function mapMyZapErrorCode(result, fallbackMessage) {
+  const code = result && (result.code || result.errorCode);
+  const friendly = code && MYZAP_ERROR_MESSAGES[code];
+  const baseMsg = friendly || (result && result.message) || fallbackMessage || 'Erro desconhecido';
+  const debugLog = result && (result.debugLogPath || result.logPath);
+  return debugLog ? `${baseMsg}\n\nLog de debug: ${debugLog}` : baseMsg;
+}
+
+// Listener: o backend avisa quando o processo MyZap encerra inesperadamente.
+// Se a UI estiver esperando QR, abortamos o polling e mostramos hint imediato.
+if (typeof window !== 'undefined' && window.api && typeof window.api.on === 'function') {
+  window.api.on('myzap:childExited', (payload) => {
+    try {
+      console.warn('[MyZap UI] childExited recebido:', payload);
+      if (qrPollingTimer) {
+        stopQrPolling();
+      }
+      const qrBox = document.getElementById('qrcode-box');
+      const statusIndicator = document.querySelector('.status-indicator');
+      if (statusIndicator) {
+        statusIndicator.className = 'status-indicator disconnected';
+        statusIndicator.textContent = '❌ Servico MyZap encerrou';
+      }
+      if (qrBox) {
+        const exitInfo = payload && (payload.exitCode != null ? `codigo ${payload.exitCode}` : (payload.signal || 'sem detalhe'));
+        qrBox.innerHTML = `
+          <span class="text-danger text-small">
+            O processo MyZap terminou inesperadamente (${exitInfo}).<br>
+            Verifique os logs em "Ver logs" e tente iniciar novamente.
+          </span>
+        `;
+      }
+      setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
+    } catch (err) {
+      console.error('[MyZap UI] Falha ao tratar childExited:', err);
+    }
+  });
+}
 
 function stopQrPolling() {
   if (qrPollingTimer) {
@@ -1486,6 +1399,10 @@ async function iniciarSessao() {
     return;
   }
 
+  // Marcar janela de boot para que o polling de status nao mostre "desconectado"
+  // enquanto a sessao MyZap ainda esta sendo criada (~ ate 30s).
+  sessionBootDeadline = Date.now() + SESSION_BOOT_GRACE_MS;
+
   const qrBox = document.getElementById('qrcode-box');
   const statusIndicator = document.querySelector('.status-indicator');
 
@@ -1512,8 +1429,13 @@ async function iniciarSessao() {
     const response = await window.api.startSession();
     console.log('[MyZap UI] startSession resposta:', JSON.stringify(response));
 
+    // Codigo estruturado de falha (ex.: INITIALIZING_STUCK) tem prioridade sobre o result generico
+    if (response && response.code && MYZAP_ERROR_MESSAGES[response.code]) {
+      throw new Error(mapMyZapErrorCode(response));
+    }
+
     if (!response || (response.result !== 'success' && response.result !== 200)) {
-      throw new Error('Sem resposta do MyZap. Verifique se o servico esta rodando (porta 5555).');
+      throw new Error(mapMyZapErrorCode(response, 'Sem resposta do MyZap. Verifique se o servico esta rodando (porta 5555).'));
     }
 
     setButtonsState({ canStart: false, canDelete: true, canSendTest: false });
@@ -1553,11 +1475,41 @@ async function iniciarSessao() {
     statusIndicator.className = 'status-indicator disconnected';
     statusIndicator.textContent = '❌ Erro ao iniciar sessao';
 
+    const detail = (err && err.message) ? String(err.message) : 'Nao foi possivel iniciar a sessao';
+    const isStuck = String(detail).includes('travou ao inicializar') || String(detail).includes('INITIALIZING_STUCK');
     qrBox.innerHTML = `
-      <span class="text-danger text-small">
-        Nao foi possivel iniciar a sessao
+      <span class="text-danger text-small" style="white-space: pre-wrap;">
+        ${detail}
       </span>
+      ${isStuck ? '<div class="mt-2"><button id="btn-hard-restart" class="btn btn-warning btn-sm">Recuperar automaticamente</button></div>' : ''}
     `;
+    if (isStuck) {
+      const btn = document.getElementById('btn-hard-restart');
+      if (btn) {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          btn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Reiniciando...';
+          try {
+            const result = await window.api.hardRestartMyZap();
+            if (result?.status === 'success') {
+              statusIndicator.className = 'status-indicator waiting';
+              statusIndicator.textContent = 'Servico reiniciado. Tentando nova sessao...';
+              sessionBootDeadline = Date.now() + SESSION_BOOT_GRACE_MS;
+              setTimeout(() => iniciarSessao(), 2000);
+            } else {
+              btn.disabled = false;
+              btn.textContent = 'Tentar novamente';
+              alert('Falha ao reiniciar: ' + (result?.message || 'erro desconhecido'));
+            }
+          } catch (e) {
+            btn.disabled = false;
+            btn.textContent = 'Tentar novamente';
+            alert('Erro ao reiniciar: ' + (e?.message || e));
+          }
+        });
+      }
+    }
+    setButtonsState({ canStart: true, canDelete: true, canSendTest: false });
   }
 }
 
@@ -1723,80 +1675,6 @@ function showConfigStatus(type, message) {
   }
 }
 
-async function runExternalConfigAction(buttonId, busyText, action) {
-  const button = document.getElementById(buttonId);
-  const oldText = button?.textContent || '';
-
-  if (button) {
-    button.disabled = true;
-    button.textContent = busyText;
-  }
-
-  try {
-    return await action();
-  } finally {
-    if (button) {
-      button.disabled = false;
-      button.textContent = oldText;
-    }
-
-    refreshExternalStartControls().catch((error) => {
-      console.warn('Falha ao atualizar acoes do start externo:', error?.message || error);
-    });
-  }
-}
-
-async function iniciarMyZapExternoAgora() {
-  if (!window.api?.startExternalMyZapNow) {
-    showConfigStatus('error', 'Esta versao do gerenciador nao expoe o start externo do MaisApp.');
-    return;
-  }
-
-  const result = await runExternalConfigAction('btn-external-start-now', 'Iniciando...', () => window.api.startExternalMyZapNow());
-  if (result?.status === 'success') {
-    showConfigStatus('success', result.message || 'Disparo externo solicitado com sucesso.');
-    startConnectionStatusPolling();
-    setTimeout(() => {
-      checkConnection().catch((error) => {
-        console.warn('Falha ao revalidar conexao apos start externo:', error?.message || error);
-      });
-    }, 5000);
-    return;
-  }
-
-  showConfigStatus('error', result?.message || 'Nao foi possivel iniciar o MaisApp por fora.');
-}
-
-async function ativarAutoInicioExterno() {
-  if (!window.api?.installExternalMyZapAutoStart) {
-    showConfigStatus('error', 'Esta versao do gerenciador nao expoe o auto inicio externo.');
-    return;
-  }
-
-  const result = await runExternalConfigAction('btn-external-autostart-enable', 'Ativando...', () => window.api.installExternalMyZapAutoStart());
-  if (result?.status === 'success') {
-    showConfigStatus('success', result.message || 'Auto inicio externo ativado com sucesso.');
-    return;
-  }
-
-  showConfigStatus('error', result?.message || 'Nao foi possivel ativar o auto inicio externo.');
-}
-
-async function removerAutoInicioExterno() {
-  if (!window.api?.removeExternalMyZapAutoStart) {
-    showConfigStatus('error', 'Esta versao do gerenciador nao expoe a remocao do auto inicio externo.');
-    return;
-  }
-
-  const result = await runExternalConfigAction('btn-external-autostart-remove', 'Removendo...', () => window.api.removeExternalMyZapAutoStart());
-  if (result?.status === 'success') {
-    showConfigStatus('success', result.message || 'Auto inicio externo removido com sucesso.');
-    return;
-  }
-
-  showConfigStatus('error', result?.message || 'Nao foi possivel remover o auto inicio externo.');
-}
-
 function updateConfigInstallHint(tokenValue) {
   const hint = document.getElementById('config-install-hint');
   const btnInstall = document.getElementById('btn-save-and-install');
@@ -1822,31 +1700,6 @@ async function saveCapabilityPreferencesFromUi() {
 }
 
 const cfg_myzap = document.getElementById('myzap-config-form');
-const localStartModeField = document.getElementById('myzap-local-start-mode');
-const localStartCommandField = document.getElementById('myzap-local-start-command');
-
-if (localStartModeField) {
-  localStartModeField.addEventListener('change', () => {
-    if (normalizeLocalStartMode(localStartModeField.value) === 'manual' && localStartCommandField) {
-      localStartCommandField.value = 'dev';
-    }
-    const preferences = getLocalStartPreferencesFromForm();
-    renderLocalStartPreferenceHelp(preferences);
-    refreshExternalStartControls(preferences).catch((error) => {
-      console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
-    });
-  });
-}
-
-if (localStartCommandField) {
-  localStartCommandField.addEventListener('change', () => {
-    const preferences = getLocalStartPreferencesFromForm();
-    renderLocalStartPreferenceHelp(preferences);
-    refreshExternalStartControls(preferences).catch((error) => {
-      console.warn('Falha ao atualizar controles do start externo:', error?.message || error);
-    });
-  });
-}
 
 cfg_myzap.onsubmit = async (e) => {
   e.preventDefault();
@@ -1861,11 +1714,6 @@ cfg_myzap.onsubmit = async (e) => {
       throw new Error(capabilityResult?.message || 'Falha ao salvar as features opcionais.');
     }
 
-    const localStartResult = await saveLocalStartPreferencesFromUi();
-    if (localStartResult?.status !== 'success') {
-      throw new Error(localStartResult?.message || 'Falha ao salvar a estrategia de inicializacao local.');
-    }
-
     const secrets = {
       TOKEN: tokenVal,
       OPENAI_API_KEY: (document.getElementById('input-env-openai')?.value || '').trim(),
@@ -1873,11 +1721,7 @@ cfg_myzap.onsubmit = async (e) => {
     };
     const result = await window.api.saveEnvSecrets(secrets);
     if (result?.status === 'success') {
-      const externalMessage = localStartResult?.externalStartResult?.message;
-      const saveMessage = externalMessage
-        ? `${result.message} ${externalMessage}`
-        : result.message;
-      showConfigStatus('success', '✅ ' + saveMessage);
+      showConfigStatus('success', '✅ ' + result.message);
       updateConfigInstallHint(tokenVal);
     } else {
       showConfigStatus('error', 'Erro ao salvar: ' + (result?.message || 'desconhecido'));
@@ -1917,11 +1761,6 @@ async function salvarEInstalar() {
     const capabilityResult = await saveCapabilityPreferencesFromUi();
     if (capabilityResult?.status !== 'success') {
       throw new Error(capabilityResult?.message || 'Falha ao salvar as features opcionais.');
-    }
-
-    const localStartResult = await saveLocalStartPreferencesFromUi();
-    if (localStartResult?.status !== 'success') {
-      throw new Error(localStartResult?.message || 'Falha ao salvar a estrategia de inicializacao local.');
     }
 
     const secrets = {
@@ -1972,9 +1811,6 @@ async function iniciarMyZapServico() {
   const statusApi = document.getElementById('status-api');
   const myzap_modoIntegracao = (await window.api.getStore('myzap_modoIntegracao')) ?? 'local';
   const myzap_remoteConfigOk = Boolean(await window.api.getStore('myzap_remoteConfigOk'));
-  const localStartPreferences = await getStoredLocalStartPreferences();
-
-  updateStartServiceButtonLabel(localStartPreferences.localStartMode);
 
   if (!myzap_remoteConfigOk || !isModoLocal(myzap_modoIntegracao)) {
     statusApi.textContent = !myzap_remoteConfigOk
@@ -2001,29 +1837,9 @@ async function iniciarMyZapServico() {
     Iniciando...
   `;
   statusApi.className = 'badge bg-warning text-dark status-badge';
+  // Janela de boot tambem cobre o startup do servico MyZap, nao so a sessao.
+  sessionBootDeadline = Date.now() + SESSION_BOOT_GRACE_MS;
   try {
-    if (localStartPreferences.localStartMode === 'manual') {
-      const result = await window.api.startExternalMyZapNow();
-      statusApi.classList.remove('bg-success', 'bg-danger', 'bg-warning', 'text-dark');
-
-      if (result?.status === 'success') {
-        statusApi.textContent = result.message || `Disparo externo solicitado com ${getLocalStartCommandExample(localStartPreferences.localStartCommand)}.`;
-        statusApi.classList.add('bg-info', 'text-dark');
-        startConnectionStatusPolling();
-        setTimeout(() => {
-          checkConnection().catch((error) => {
-            console.warn('Falha ao revalidar MyZap apos start externo:', error?.message || error);
-          });
-        }, 5000);
-      } else {
-        statusApi.textContent = result?.message || `Nao foi possivel disparar ${getLocalStartCommandExample(localStartPreferences.localStartCommand)} pelo gerenciador.`;
-        statusApi.classList.add('bg-danger');
-      }
-
-      btnStart.disabled = false;
-      return;
-    }
-
     const result = await window.api.ensureMyZapStarted(true);
     statusApi.textContent = result.message || 'Erro ao iniciar MyZap!';
     statusApi.classList.remove('bg-warning', 'text-dark');
@@ -2105,7 +1921,7 @@ async function installMyZap() {
     );
 
     if (clone.status === 'error') {
-      throw new Error((clone.message || 'Erro desconhecido') + (clone.debugLogPath ? '\n\nLog de debug: ' + clone.debugLogPath : ''));
+      throw new Error(mapMyZapErrorCode(clone, 'Erro desconhecido na instalacao'));
     }
 
     statusBadge.textContent = 'MyZap se encontra no diretorio configurado!';
@@ -2184,7 +2000,7 @@ async function reinstallMyZap() {
     );
 
     if (clone.status === 'error') {
-      throw new Error((clone.message || 'Erro desconhecido') + (clone.debugLogPath ? '\n\nLog de debug: ' + clone.debugLogPath : ''));
+      throw new Error(mapMyZapErrorCode(clone, 'Erro desconhecido na reinstalacao'));
     }
 
     statusBadge.textContent = 'MyZap se encontra no diretorio configurado!';

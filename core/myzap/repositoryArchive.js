@@ -3,7 +3,7 @@ const os = require('os');
 const path = require('path');
 const https = require('https');
 const extractZip = require('extract-zip');
-const { error: logError, info } = require('./myzapLogger');
+const { error: logError, info } = require('./myzapLogger').forArea('install');
 
 const MYZAP_ARCHIVE_URL = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/refs/heads/main';
 const MAX_REDIRECTS = 5;

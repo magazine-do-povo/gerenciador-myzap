@@ -1,6 +1,6 @@
 const Store = require("electron-store");
 const store = new Store();
-const { warn, error, debug } = require('../myzapLogger');
+const { warn, error, debug } = require('../myzapLogger').forArea('api');
 
 async function deleteSession() {
     const token = store.get('myzap_apiToken');

@@ -9,10 +9,6 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
   const {
     createSettings,
     toggleMyzap,
-    startExternalMyZapNow,
-    installExternalMyZapAutoStart,
-    removeExternalMyZapAutoStart,
-    getExternalMyZapState,
     updateMyZapNow,
     createPainelMyZap,
     createFilaMyZap,
@@ -21,10 +17,6 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     abrirPastaLogs,
     checkUpdates
   } = callbacks;
-
-  const externalState = typeof getExternalMyZapState === 'function'
-    ? getExternalMyZapState()
-    : { available: false, autoStartInstalled: false, manualMode: false, configuredDir: false };
 
   const template = [
     { label: '📱  Gerenciador MyZap', enabled: false },
@@ -39,30 +31,6 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
     { label: '💬  Painel MyZap', click: createPainelMyZap },
     { label: '📬  Fila de mensagens', click: createFilaMyZap },
   ];
-
-  if (externalState.available) {
-    template.push({ type: 'separator' });
-    template.push({ label: '── MaisApp Externo ──', enabled: false });
-    template.push({
-      label: externalState.manualMode
-        ? '▶️  Iniciar MaisApp por fora agora'
-        : '▶️  Disparar start externo agora',
-      click: () => startExternalMyZapNow(),
-      enabled: !!startExternalMyZapNow && externalState.configuredDir,
-    });
-    template.push({
-      label: externalState.autoStartInstalled
-        ? '✅  Auto inicio externo ativado'
-        : '🪟  Ativar auto inicio externo',
-      click: () => installExternalMyZapAutoStart(),
-      enabled: !!installExternalMyZapAutoStart && externalState.configuredDir && !externalState.autoStartInstalled,
-    });
-    template.push({
-      label: '🧹  Remover auto inicio externo',
-      click: () => removeExternalMyZapAutoStart(),
-      enabled: !!removeExternalMyZapAutoStart && externalState.autoStartInstalled,
-    });
-  }
 
   template.push({ type: 'separator' });
   template.push({ label: '── Sistema ──', enabled: false });

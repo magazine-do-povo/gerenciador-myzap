@@ -11,13 +11,34 @@ const TEXT_LEVEL_MAP = {
   debug: 'debug'
 };
 
+Zap - API',
+  'log-myzap-watcher': 'MyZap - Watchers',
+  'log-myzap-backend': 'MyZap - Backend',
+  'log-myzap-ipc': 'MyZap - IPC',
+  'log-myzap': 'MyZap (legado)'
+};
+
+function buildLogLabel(filename) {
+  // formato: YYYY-MM-DD-<prefixo>.jsonl
+  const match = filename.match(/^(\d{4}-\d{2}-\d{2})-(.+)\.jsonl$/);
+  if (!match) return filename;
+  const [, date, prefix] = match;
+  const label = CHANNEL_LABELS[prefix] || prefix.replace(/^log-/, '').replace(/-/g, ' ');
+  return `${date} - ${label}`;
+}
+
 function listLogFiles() {
   try {
     return fs.readdirSync(LOG_DIR)
       .filter((file) => file.endsWith('.jsonl'))
       .map((file) => {
         const stats = fs.statSync(path.join(LOG_DIR, file));
-        return { name: file, size: stats.size, mtime: stats.mtimeMs };
+        return {
+          name: file,
+          label: buildLogLabel(file),
+          size: stats.size,
+          mtime: stats.mtimeMs
+        };
       });
   } catch (err) {
     console.error('Erro ao listar logs', err);
@@ -69,31 +90,3 @@ function matchesFilters(line, levelFilters, search, isJson) {
   let levelPass = true;
 
   if (levelFilters.length) {
-    if (isJson) {
-      try {
-        const parsed = JSON.parse(line);
-        levelPass = levelFilters.includes(parsed.level);
-      } catch {
-        levelPass = true;
-      }
-    } else {
-      const marker = line.match(/\[(\w+)\]/);
-      if (marker) {
-        const normalized = TEXT_LEVEL_MAP[marker[1].toLowerCase()] || marker[1].toLowerCase();
-        levelPass = levelFilters.includes(normalized);
-      }
-    }
-  }
-
-  if (!levelPass) return false;
-  if (sanitizedSearch) return line.toLowerCase().includes(sanitizedSearch);
-  return true;
-}
-
-contextBridge.exposeInMainWorld('logViewer', {
-  listLogFiles,
-  readLogTail,
-  copyText(text = '') {
-    clipboard.writeText(String(text));
-  }
-});

@@ -1,6 +1,7 @@
 const { app } = require('electron');
 const log = require('electron-log');
-const { info, warn, error } = require('./utils/logger');
+const { createLogger } = require('./utils/logger');
+const { info, warn, error } = createLogger('updater');
 
 function attachAutoUpdaterHandlers(autoUpdater, callbacks = {}) {
   const { toast } = callbacks;

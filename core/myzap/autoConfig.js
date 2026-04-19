@@ -2,7 +2,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const Store = require('electron-store');
-const { info, warn, debug } = require('./myzapLogger');
+const { info, warn, debug } = require('./myzapLogger').forArea('install');
 const {
     startProgress,
     stepProgress,

@@ -1,39 +1,21 @@
 const { execSync, spawn } = require('child_process');
-const Store = require('electron-store');
 const fs = require('fs');
 const path = require('path');
-const { error: logError, info, warn } = require('./myzapLogger');
+const { error: logError, info, warn } = require('./myzapLogger').forArea('runtime');
 const {
   isPortInUse,
   isLocalHttpServiceReachable,
+  killProcessesOnPort,
   getPnpmCommand,
   getGitCommand,
   findSystemNodePath,
   buildCleanEnvForChild,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
+const { probeMyZapIdentity } = require('./api/myzapHealthcheck');
 
 function getErrorMessage(error) {
   return error && error.message ? error.message : String(error);
-}
-
-function normalizeLocalStartCommandPreference(value) {
-  const normalized = String(value || '').trim().toLowerCase();
-  return ['start', 'dev'].includes(normalized) ? normalized : 'auto';
-}
-
-function getConfiguredLocalStartCommand(options = {}) {
-  const explicitPreference = normalizeLocalStartCommandPreference(options.localStartCommand);
-  if (explicitPreference !== 'auto') {
-    return explicitPreference;
-  }
-
-  try {
-    const store = new Store();
-    return normalizeLocalStartCommandPreference(store.get('myzap_localStartCommand'));
-  } catch (_err) {
-    return 'auto';
-  }
 }
 
 function readMyZapPackageJson(dirPath) {
@@ -114,10 +96,7 @@ function buildPackageScriptRunner(baseRunner, scriptName) {
 async function resolveMyZapStartRunners(dirPath, options = {}) {
   const packageJson = readMyZapPackageJson(dirPath);
   const scripts = (packageJson && packageJson.scripts) || {};
-  const preference = getConfiguredLocalStartCommand(options);
-  const preferredOrder = preference === 'auto'
-    ? ['start', 'dev']
-    : [preference];
+  const preferredOrder = ['start', 'dev'];
   const scriptCandidates = preferredOrder.filter((scriptName) => typeof scripts[scriptName] === 'string' && scripts[scriptName].trim());
 
   if (!scriptCandidates.length) {
@@ -146,6 +125,21 @@ async function resolveMyZapStartRunners(dirPath, options = {}) {
 
 /** Referencia ao child process ativo do MyZap (pnpm start) */
 let myzapChildProcess = null;
+
+/** Listeners externos que querem ser notificados quando o child do MyZap finaliza. */
+const childExitListeners = new Set();
+
+function onMyZapChildExit(listener) {
+  if (typeof listener !== 'function') return () => {};
+  childExitListeners.add(listener);
+  return () => childExitListeners.delete(listener);
+}
+
+function emitChildExit(payload) {
+  for (const listener of childExitListeners) {
+    try { listener(payload); } catch (_e) { /* nao propagar */ }
+  }
+}
 
 /**
  * Mata o child process rastreado do MyZap, se existir.
@@ -236,6 +230,7 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options
   const inicio = Date.now();
   const getChildError = options.getChildError || (() => null);
   const isChildAlive = options.isChildAlive || (() => true);
+  const requireMyZapIdentity = options.requireMyZapIdentity !== false; // default: true
 
   async function verificarNovamente() {
     // Falhar rapido se o child process ja morreu com erro
@@ -260,7 +255,30 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options
     ]);
 
     if (portaAtiva || httpAtivo) {
-      return true;
+      // Confirmar que e o MyZap respondendo, nao outro app na 5555
+      if (requireMyZapIdentity) {
+        const identity = await probeMyZapIdentity({ timeoutMs: 2500 });
+        if (identity.isMyZap) {
+          return true;
+        }
+        if (identity.alive) {
+          // Algo HTTP esta na porta mas nao parece MyZap; manter polling — o MyZap
+          // pode estar levantando ainda. Logar warning periodico.
+          const elapsed = Date.now() - inicio;
+          if (elapsed % 15000 < intervalMs) {
+            warn('aguardarPorta: porta ocupada por servico HTTP que nao parece o MyZap (ainda subindo?)', {
+              metadata: {
+                area: 'iniciarMyZap',
+                porta,
+                elapsed,
+                status: identity.status,
+              },
+            });
+          }
+        }
+      } else {
+        return true;
+      }
     }
 
     const elapsed = Date.now() - inicio;
@@ -271,6 +289,7 @@ async function aguardarPorta(porta, timeoutMs = 20000, intervalMs = 500, options
           porta,
           elapsed,
           timeoutMs,
+          requireMyZapIdentity,
         },
       });
       return false;
@@ -313,29 +332,68 @@ async function iniciarMyZap(dirPath, options = {}) {
       dirPath,
       porta,
     });
-    const [portaAtiva, httpAtivo] = await Promise.all([
-      isPortInUse(porta),
-      isLocalHttpServiceReachable({ timeoutMs: 3000 }),
-    ]);
-    const estaRodando = portaAtiva || httpAtivo;
 
-    if (estaRodando) {
-      transition('running', {
-        message: 'MyZap ja estava em execucao local.',
-        dirPath,
-        porta,
-        detectadoVia: portaAtiva ? 'porta' : 'http',
+    const portaOcupada = await isPortInUse(porta);
+    if (portaOcupada) {
+      const identity = await probeMyZapIdentity({ timeoutMs: 3000 });
+
+      if (identity.alive && identity.isMyZap) {
+        transition('running', {
+          message: 'MyZap ja estava em execucao local.',
+          dirPath,
+          porta,
+          detectadoVia: 'identity-probe',
+        });
+        reportProgress('MyZap ja estava em execucao local.', 'already_running', {
+          percent: 95,
+          dirPath,
+          porta,
+          detectadoVia: 'identity-probe',
+        });
+        return {
+          status: 'success',
+          message: 'O MyZap ja esta em execucao.',
+        };
+      }
+
+      if (identity.alive && !identity.isMyZap) {
+        const msg = `Porta ${porta} esta ocupada por outro servico HTTP que NAO parece o MyZap. Libere a porta e tente novamente.`;
+        warn(msg, {
+          metadata: {
+            area: 'iniciarMyZap',
+            porta,
+            httpStatus: identity.status,
+            attempts: identity.attempts,
+          },
+        });
+        transition('error', { message: msg, phase: 'check_runtime' });
+        return {
+          status: 'error',
+          code: 'PORT_OCCUPIED_BY_OTHER',
+          message: msg,
+        };
+      }
+
+      // Porta ocupada mas sem HTTP respondendo: processo zumbi (provavelmente MyZap antigo).
+      // Matar e seguir o fluxo normal de start.
+      warn('Porta 5555 ocupada por processo zumbi (sem HTTP). Matando antes de iniciar MyZap.', {
+        metadata: { area: 'iniciarMyZap', porta, probeError: identity.error },
       });
-      reportProgress('MyZap ja estava em execucao local.', 'already_running', {
-        percent: 95,
-        dirPath,
-        porta,
-        detectadoVia: portaAtiva ? 'porta' : 'http',
+      const killResult = killProcessesOnPort(porta);
+      info('Resultado do kill de processo zumbi na porta 5555', {
+        metadata: { area: 'iniciarMyZap', porta, ...killResult },
       });
-      return {
-        status: 'success',
-        message: 'O MyZap ja esta em execucao.',
-      };
+      // Esperar liberar
+      const tInicio = Date.now();
+      while (await isPortInUse(porta)) {
+        if (Date.now() - tInicio > 5000) {
+          const msg = `Nao foi possivel liberar a porta ${porta} apos matar processos zumbi.`;
+          logError(msg, { metadata: { area: 'iniciarMyZap', porta } });
+          transition('error', { message: msg, phase: 'check_runtime' });
+          return { status: 'error', code: 'PORT_BUSY_AFTER_KILL', message: msg };
+        }
+        await wait(250);
+      }
     }
 
     const gitDir = path.join(dirPath, '.git');
@@ -368,7 +426,6 @@ async function iniciarMyZap(dirPath, options = {}) {
         metadata: {
           area: 'iniciarMyZap',
           dirPath,
-          localStartCommand: getConfiguredLocalStartCommand(options),
         },
       });
       return {
@@ -490,6 +547,13 @@ async function iniciarMyZap(dirPath, options = {}) {
             : `MyZap (${startRunner.scriptName || 'start'}) finalizou com codigo ${code} (signal: ${signal || 'nenhum'})`;
           childError = new Error(msg);
         }
+        emitChildExit({
+          exitCode: code,
+          signal,
+          pid: child.pid,
+          stderrTail: stderrOutput.slice(-500),
+          scriptName: startRunner.scriptName || 'start',
+        });
         if (myzapChildProcess === child) {
           myzapChildProcess = null;
         }
@@ -504,6 +568,7 @@ async function iniciarMyZap(dirPath, options = {}) {
       const abriuPorta = await aguardarPorta(porta, 180000, 1500, {
         getChildError: () => childError,
         isChildAlive: () => myzapChildProcess !== null,
+        requireMyZapIdentity: true,
       });
 
       if (abriuPorta) {
@@ -575,4 +640,4 @@ async function iniciarMyZap(dirPath, options = {}) {
   }
 }
 
-module.exports = { iniciarMyZap, killMyZapProcess };
+module.exports = { iniciarMyZap, killMyZapProcess, onMyZapChildExit };

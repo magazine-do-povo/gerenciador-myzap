@@ -1,6 +1,6 @@
 const Store = require('electron-store');
 const store = new Store();
-const { info, warn, error, debug } = require('../myzapLogger');
+const { info, warn, error, debug } = require('../myzapLogger').forArea('api');
 const {
     parseBooleanLike,
     normalizeCapabilityMode,
