@@ -4,6 +4,7 @@ let trayInstance = null;
 let actions = null;
 let getMyzapStatus = () => false;
 let appVersion = '?.?.?';
+let errorCount = 0;
 
 function buildMenuTemplate(myzapAtivo, callbacks) {
   const {
@@ -51,6 +52,31 @@ function buildMenuTemplate(myzapAtivo, callbacks) {
   return template;
 }
 
+function buildTooltip() {
+  const base = `Gerenciador MyZap  v${appVersion}`;
+  if (errorCount > 0) {
+    const plural = errorCount === 1 ? 'erro recente' : 'erros recentes';
+    return `${base}\n⚠️ ${errorCount} ${plural} no envio`;
+  }
+  return base;
+}
+
+function refreshTooltip() {
+  if (trayInstance) {
+    trayInstance.setToolTip(buildTooltip());
+  }
+}
+
+/**
+ * Atualiza o contador de erros recentes refletido no tooltip/titulo da tray.
+ * Chamado pelo watcher da fila quando ha falhas de envio.
+ */
+function setErrorCount(count) {
+  const next = Number(count);
+  errorCount = Number.isFinite(next) && next > 0 ? Math.floor(next) : 0;
+  refreshTooltip();
+}
+
 function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
   actions = callbackSet;
   appVersion = version;
@@ -60,7 +86,7 @@ function init(iconPath, callbackSet, version = '?.?.?', myzapStatusState) {
   }
 
   trayInstance = new Tray(iconPath);
-  trayInstance.setToolTip(`Gerenciador MyZap  v${version}`);
+  trayInstance.setToolTip(buildTooltip());
   rebuildMenu();
   return trayInstance;
 }
@@ -76,5 +102,6 @@ function rebuildMenu() {
 
 module.exports = {
   init,
-  rebuildMenu
+  rebuildMenu,
+  setErrorCount
 };

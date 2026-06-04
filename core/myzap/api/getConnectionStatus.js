@@ -31,12 +31,29 @@ async function getConnectionStatus() {
                 sessionkey: session
             }
         });
+
+        // Nao tratar 401/403/erro HTTP com corpo JSON como sucesso (preserva shape: []).
+        // 401/403 = credencial/sessao invalida (acao: reconfigurar/reconectar), distinto
+        // de falha de rede (MyZap offline) que cai no catch abaixo.
+        if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+                error("Credencial recusada ao consultar status de conexão MyZap (getConnectionStatus)", {
+                    metadata: { area: 'getConnectionStatus', categoria: 'conexao', httpStatus: res.status }
+                });
+            } else {
+                warn("Resposta HTTP de erro ao consultar status de conexão MyZap", {
+                    metadata: { area: 'getConnectionStatus', httpStatus: res.status }
+                });
+            }
+            return [];
+        }
+
         const data = await res.json();
         return data;
 
     } catch (e) {
         error("Erro ao consultar API", {
-            metadata: { area: 'getConnectionStatus', error: e }
+            metadata: { area: 'getConnectionStatus', error: (e && e.message) || String(e) }
         });
         return [];
     }

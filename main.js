@@ -21,7 +21,9 @@ const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
 const {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
-  getWhatsappQueueWatcherStatus
+  getWhatsappQueueWatcherStatus,
+  setQueueErrorNotifier,
+  setTrayErrorCountSetter
 } = require('./core/api/whatsappQueueWatcher');
 const {
   startMyzapStatusWatcher,
@@ -122,6 +124,41 @@ function notifyAdminRequired(result, context = 'runtime') {
       context,
       result,
     }
+  });
+}
+
+const QUEUE_ERROR_MOTIVO_LABEL = {
+  timeout: 'tempo esgotado',
+  sessao_caida: 'sessao do WhatsApp caiu',
+  json_parse: 'resposta invalida',
+  myzap_http: 'erro no MyZap',
+  numero_invalido: 'numero invalido',
+  myzap_validacao: 'configuracao incompleta',
+  desconhecido: 'erro desconhecido'
+};
+
+/**
+ * Notifica o operador (Notification nativa) quando o envio de mensagem(ns)
+ * falha. Disparado no maximo 1x por rodada pelo watcher (ja agregado).
+ */
+function notifyQueueError(detalhe = {}) {
+  const motivoKey = String(detalhe.motivo || 'desconhecido');
+  const motivoLabel = QUEUE_ERROR_MOTIVO_LABEL[motivoKey] || motivoKey;
+  const total = Number(detalhe.total) || 1;
+  const idfila = detalhe.idfila != null ? `#${detalhe.idfila}` : 's/ id';
+
+  const corpo = total > 1
+    ? `${total} mensagens falharam (${motivoLabel}). 1a: fila ${idfila}.`
+    : `Mensagem da fila ${idfila} falhou: ${motivoLabel}.`;
+
+  new Notification({
+    title: 'Falha no envio WhatsApp',
+    body: corpo,
+    icon: path.join(__dirname, 'assets/icon.png')
+  }).show();
+
+  myzapWarn('MyZap: falha de envio notificada ao operador', {
+    metadata: { motivo: motivoKey, total, idfila: detalhe.idfila ?? null }
   });
 }
 
@@ -722,6 +759,17 @@ if (!hasSingleInstanceLock) {
 
     setTrayCallback(rebuildTrayMenu);
     rebuildTrayMenu();
+
+    // Liga o watcher da fila ao operador: notificacao nativa em falha de envio
+    // e contador de erros recentes refletido no tooltip da tray.
+    setQueueErrorNotifier(notifyQueueError);
+    setTrayErrorCountSetter((count) => {
+      try {
+        trayManager.setErrorCount(count);
+      } catch (_e) {
+        /* tray indisponivel: ignora */
+      }
+    });
 
     if (!hasValidConfigMyZap()) {
       warn('Configuracao da API ausente no startup', {

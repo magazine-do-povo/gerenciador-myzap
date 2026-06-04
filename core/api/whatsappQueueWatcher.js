@@ -1,5 +1,8 @@
 const Store = require('electron-store');
 const { info, warn, error, debug } = require('../myzap/myzapLogger').forArea('watcher');
+// Canal 'backend' dedicado (myzap-backend) para as chamadas ao Hub
+// (buscarPendentes / atualizarStatusFila), separando-as dos logs do MyZap local.
+const backendLog = require('../myzap/myzapLogger').forArea('backend');
 const {
   isCapabilityEnabled,
   getCapabilityEntry
@@ -12,6 +15,19 @@ const LOOP_INTERVAL_MS = 3000;
 const FETCH_TIMEOUT_MS = 15000;
 const PROCESSANDO_TIMEOUT_MS = 120000;
 const MAX_ULTIMOS_ENVIOS = 50;
+
+// Limite de caracteres da resposta crua do MyZap enviada ao backend / logada.
+const MAX_RESPOSTA_MYZAP_CHARS = 2000;
+
+// Reconexao: backoff exponencial (com teto) enquanto o MyZap estiver indisponivel.
+// Nao confundir com humanizacao/ritmo de envio: o ritmo entre mensagens e
+// controlado server-side pelo Hub (liberar_apos); este backoff so espaca as
+// TENTATIVAS de reconexao quando o MyZap nao responde.
+const BACKOFF_BASE_MS = LOOP_INTERVAL_MS;
+const BACKOFF_MAX_MS = 30000;
+
+// Proxima rodada efetiva so volta a acontecer apos esse timestamp (backoff).
+let backoffAteEm = 0;
 
 let ativo = false;
 let processando = false;
@@ -26,8 +42,136 @@ let consecutiveSkips = 0;
 const MAX_CONSECUTIVE_SKIPS = 10;
 const SKIP_LOG_EVERY = 5;
 
+/**
+ * Aplica backoff exponencial simples (com teto) para a proxima rodada efetiva,
+ * com base na quantidade de skips consecutivos. O loop continua rodando a cada
+ * 3s, mas o ciclo so volta a processar/checar apos a janela de backoff expirar
+ * (recuperacao com latencia de ate BACKOFF_MAX_MS). Reusa consecutiveSkips do
+ * auto-stop existente — sem contador paralelo.
+ */
+function aplicarBackoff() {
+  const fator = Math.min(consecutiveSkips, 6); // limita o expoente
+  const atraso = Math.min(BACKOFF_BASE_MS * Math.pow(2, fator), BACKOFF_MAX_MS);
+  backoffAteEm = Date.now() + atraso;
+  return atraso;
+}
+
+/** Limpa o backoff quando o MyZap volta a responder. */
+function limparBackoff() {
+  backoffAteEm = 0;
+}
+
+// Contador acumulado de falhas de envio recentes (para tooltip da tray/status).
+let recentErrorCount = 0;
+// Callback opcional (registrado pelo main) para notificar o operador em falha.
+// Recebe ({ idfila, motivo, erro, total }). Disparado no maximo 1x por rodada.
+let queueErrorNotifier = null;
+// Callback opcional para refletir o contador de erros na tray (tooltip).
+let trayErrorCountSetter = null;
+
 function supportsQueuePolling() {
   return isCapabilityEnabled('supportsQueuePolling', store);
+}
+
+/** Registra o notificador de falha de envio (toast/Notification do main). */
+function setQueueErrorNotifier(fn) {
+  queueErrorNotifier = typeof fn === 'function' ? fn : null;
+}
+
+/** Registra o setter do contador de erros na tray (tooltip). */
+function setTrayErrorCountSetter(fn) {
+  trayErrorCountSetter = typeof fn === 'function' ? fn : null;
+}
+
+/** Atualiza a tray com o total de erros recentes (best-effort). */
+function atualizarTrayErros() {
+  if (trayErrorCountSetter) {
+    try {
+      trayErrorCountSetter(recentErrorCount);
+    } catch (_error) {
+      /* tray indisponivel: ignora */
+    }
+  }
+}
+
+/** Trunca a resposta crua do MyZap (objeto ou string) para ~2000 chars. */
+function truncarResposta(resposta) {
+  if (resposta === undefined || resposta === null) {
+    return '';
+  }
+  let texto;
+  if (typeof resposta === 'string') {
+    texto = resposta;
+  } else {
+    try {
+      texto = JSON.stringify(resposta);
+    } catch (_error) {
+      texto = String(resposta);
+    }
+  }
+  if (texto.length > MAX_RESPOSTA_MYZAP_CHARS) {
+    return `${texto.slice(0, MAX_RESPOSTA_MYZAP_CHARS)}...[truncado]`;
+  }
+  return texto;
+}
+
+/**
+ * Heuristica: detecta na resposta do MyZap indicacao de numero invalido
+ * (ex.: "number does not exist", "numero invalido", "not on whatsapp").
+ * Exige contexto de numero/destinatario E indicacao de inexistencia, e exclui
+ * termos de sessao/token/credencial/payload para nao confundir com erro de auth.
+ */
+function pareceNumeroInvalido(body) {
+  const txt = String(
+    body?.error
+    || body?.message
+    || body?.messages
+    || body?.reason
+    || body?.result
+    || ''
+  ).toLowerCase();
+  if (!txt) {
+    return false;
+  }
+
+  // Exclui falhas de sessao/credencial/payload (nao sao numero invalido).
+  if (/sess(ao|ã|ion)|token|apitoken|credencial|credential|payload|sessionkey|unauthorized|n[aã]o autoriz/.test(txt)) {
+    return false;
+  }
+
+  const temContextoNumero = /n[uú]mero|number|destinat|recipient|telefone|phone|chat ?id|whatsapp/.test(txt);
+  const temInexistencia = /(does not exist|not exist|nao existe|n[aã]o existe|invalid|inv[aá]lid|not on whatsapp|sem whatsapp|not registered|nao registrad|n[aã]o registrad|no account)/.test(txt);
+
+  return temContextoNumero && temInexistencia;
+}
+
+/**
+ * Extrai o id real da mensagem no WhatsApp da resposta do /sendText do MyZap.
+ * Cobre os 3 formatos das engines: whatsapp-web.js (body.id), WppConnect
+ * (body.data.id[._serialized]) e Venom (body.messageId). Vazio se nao achar.
+ * Esse id e o que casa com o ACK (entregue/lido) la no Hub.
+ */
+function extrairMessageId(body) {
+  if (!body || typeof body !== 'object') {
+    return '';
+  }
+  const cand =
+    body.messageId
+    || body.message_id
+    || body.id
+    || (body.data && (body.data.id || body.data.messageId || body.data.message_id))
+    || (body.data && body.data.message && body.data.message.id)
+    || '';
+  if (!cand) {
+    return '';
+  }
+  if (typeof cand === 'string') {
+    return cand.trim();
+  }
+  if (typeof cand === 'object' && cand._serialized) {
+    return String(cand._serialized).trim();
+  }
+  return String(cand).trim();
 }
 
 function cloneSerializable(value) {
@@ -338,6 +482,14 @@ async function validarDisponibilidadeMyZap(sessionKey, sessionName, sessionToken
 
     const data = await res.json().catch(() => ({}));
     debug('[FilaMyZap] Retorno verifyRealStatus', { metadata: { status: res.status, data } });
+    // Diferencia credencial/sessao invalida (401/403) de MyZap offline: o sintoma
+    // e o mesmo (res.ok=false), mas a causa e a sessao/token, nao a conexao — sem
+    // isso o operador ve "MyZap indisponivel" quando o real e credencial expirada.
+    if (res.status === 401 || res.status === 403) {
+      warn('[FilaMyZap] Credencial/sessao invalida no MyZap (verifique session/token, nao e queda de conexao)', {
+        metadata: { categoria: 'conexao', codigo_http: res.status }
+      });
+    }
     return res.ok;
   } catch (err) {
     warn('[FilaMyZap] Erro ao validar disponibilidade do MyZap', {
@@ -357,8 +509,10 @@ async function buscarPendentes(apiBaseUrl, authorization, sessionKey) {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
-  debug('[FilaMyZap] Buscando pendentes', {
+  // Canal 'backend' (chamada ao Hub, nao ao MyZap local).
+  backendLog.debug('[Backend] Buscando pendentes', {
     metadata: {
+      categoria: 'fila',
       apiBaseUrl,
       sessionKey,
       query
@@ -373,8 +527,9 @@ async function buscarPendentes(apiBaseUrl, authorization, sessionKey) {
   clearTimeout(timeout);
 
   const data = await res.json().catch(() => ({}));
-  debug('[FilaMyZap] Retorno /parametrizacao-myzap/pendentes', {
+  backendLog.debug('[Backend] Retorno /parametrizacao-myzap/pendentes', {
     metadata: {
+      categoria: 'fila',
       status: res.status,
       total: data?.result?.total,
       error: data?.error
@@ -387,47 +542,93 @@ async function buscarPendentes(apiBaseUrl, authorization, sessionKey) {
   return Array.isArray(data?.result?.mensagens) ? data.result.mensagens : [];
 }
 
-async function atualizarStatusFila(apiBaseUrl, authorization, payload) {
+/**
+ * Envia o status da fila ao backend.
+ * - `payload` contem os campos base sempre enviados: { idfila, idfilial, status }
+ *   (em sucesso pode trazer tambem message_id).
+ * - `detalheErro` (opcional) so e incorporado quando status === 'erro', de forma
+ *   RETROCOMPATIVEL: backends antigos ignoram os campos extras.
+ */
+async function atualizarStatusFila(apiBaseUrl, authorization, payload, detalheErro = null) {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
-  debug('[FilaMyZap] Atualizando status da fila', { metadata: payload });
+  // Monta o body final. Campos base inalterados; extras apenas em erro.
+  let body = { ...payload };
+  if (String(payload?.status || '').toLowerCase() === 'erro' && detalheErro) {
+    body = {
+      ...body,
+      erro: detalheErro.erro || '',
+      motivo: detalheErro.motivo || 'desconhecido',
+      codigo_http: Number.isFinite(detalheErro.codigo_http) ? detalheErro.codigo_http : 0,
+      resposta_myzap: truncarResposta(detalheErro.resposta_myzap),
+      etapa: detalheErro.etapa || 'envio'
+    };
+  }
+
+  backendLog.debug('[Backend] Atualizando status da fila', {
+    metadata: { categoria: 'fila', ...body }
+  });
   const res = await fetch(`${apiBaseUrl}parametrizacao-myzap/fila/status`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: authorization
     },
-    body: JSON.stringify(payload),
+    body: JSON.stringify(body),
     signal: ctrl.signal
   });
 
   clearTimeout(timeout);
 
   const data = await res.json().catch(() => ({}));
-  debug('[FilaMyZap] Retorno /parametrizacao-myzap/fila/status', {
-    metadata: { status: res.status, data }
+  backendLog.debug('[Backend] Retorno /parametrizacao-myzap/fila/status', {
+    metadata: { categoria: 'fila', status: res.status, data }
   });
   return res.ok && !data?.error;
 }
 
+/**
+ * Envia a mensagem para o MyZap local.
+ * Retorna SEMPRE um shape uniforme:
+ *   { ok, erro?, skipped?, endpoint?, requestBody?, body?, httpStatus?,
+ *     codigo_http, resposta_myzap, motivo, etapa }
+ * - etapa: 'validacao' (falhas antes do fetch) ou 'envio' (resultado do POST).
+ * - motivo: timeout | sessao_caida | json_parse | myzap_http | numero_invalido
+ *           | myzap_validacao | desconhecido | ok | status_enviado.
+ */
 async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName, fallbackApiToken) {
   if (String(mensagem?.status || '').toLowerCase() === 'enviado') {
     return { ok: true, skipped: true, motivo: 'status_enviado' };
   }
 
+  // --- Etapa de validacao (antes de tocar no MyZap) ---
   let payloadFila = {};
   try {
     payloadFila = mensagem?.json ? JSON.parse(mensagem.json) : {};
   } catch (e) {
-    return { ok: false, erro: `JSON invalido da fila: ${e.message}` };
+    return {
+      ok: false,
+      erro: `JSON invalido da fila: ${e.message}`,
+      codigo_http: 0,
+      resposta_myzap: '',
+      motivo: 'json_parse',
+      etapa: 'validacao'
+    };
   }
 
   const endpoint = payloadFila?.endpoint;
   const data = payloadFila?.data;
 
   if (!endpoint || !data) {
-    return { ok: false, erro: 'Mensagem sem endpoint ou payload para MyZap' };
+    return {
+      ok: false,
+      erro: 'Mensagem sem endpoint ou payload para MyZap',
+      codigo_http: 0,
+      resposta_myzap: '',
+      motivo: 'myzap_validacao',
+      etapa: 'validacao'
+    };
   }
 
   const endpointNormalizado = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
@@ -441,12 +642,17 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
       ok: false,
       endpoint: endpointNormalizado,
       requestBody,
-      erro: 'SessionKey ou APIToken do MyZap ausente'
+      erro: 'SessionKey ou APIToken do MyZap ausente',
+      codigo_http: 0,
+      resposta_myzap: '',
+      motivo: 'myzap_validacao',
+      etapa: 'validacao'
     };
   }
 
   debug('[FilaMyZap] Enviando para MyZap', {
     metadata: {
+      categoria: 'envio',
       idfila: mensagem?.idfila,
       endpoint: endpointNormalizado,
       sessionKey
@@ -456,35 +662,89 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
 
-  const res = await fetch(`${MYZAP_API_URL}${endpointNormalizado}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apitoken: apiToken,
-      sessionkey: sessionKey
-    },
-    body: JSON.stringify(requestBody),
-    signal: ctrl.signal
-  });
+  // --- Etapa de envio (POST ao MyZap) ---
+  let res;
+  try {
+    res = await fetch(`${MYZAP_API_URL}${endpointNormalizado}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apitoken: apiToken,
+        sessionkey: sessionKey
+      },
+      body: JSON.stringify(requestBody),
+      signal: ctrl.signal
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    // Sem resposta HTTP: timeout (abort) ou MyZap fora do ar (conexao recusada).
+    const isTimeout = err?.name === 'AbortError' || err?.code === 'ETIMEDOUT';
+    const isConnDown = err?.code === 'ECONNREFUSED'
+      || err?.code === 'ECONNRESET'
+      || /ECONNREFUSED|ECONNRESET|fetch failed|network/i.test(err?.message || '');
+    const motivo = isTimeout ? 'timeout' : (isConnDown ? 'sessao_caida' : 'desconhecido');
+    return {
+      ok: false,
+      endpoint: endpointNormalizado,
+      requestBody,
+      erro: err?.message || 'Falha de conexao com o MyZap',
+      codigo_http: 0,
+      resposta_myzap: '',
+      motivo,
+      etapa: 'envio'
+    };
+  }
 
   clearTimeout(timeout);
 
-  const body = await res.json().catch(() => ({}));
+  // Corpo cru do MyZap. Se nao for JSON valido, classifica conforme o status.
+  let body = {};
+  let jsonParseFalhou = false;
+  try {
+    body = await res.json();
+  } catch (_error) {
+    jsonParseFalhou = true;
+    body = {};
+  }
+
   debug('[FilaMyZap] Retorno MyZap', {
     metadata: {
+      categoria: 'envio',
       idfila: mensagem?.idfila,
       status: res.status,
       body
     }
   });
+
+  if (jsonParseFalhou) {
+    return {
+      ok: false,
+      endpoint: endpointNormalizado,
+      requestBody,
+      httpStatus: res.status,
+      erro: `Resposta nao-JSON do MyZap (HTTP ${res.status})`,
+      codigo_http: res.status,
+      resposta_myzap: '',
+      motivo: res.status >= 400 ? 'myzap_http' : 'json_parse',
+      etapa: 'envio'
+    };
+  }
+
   if (!res.ok || body?.error || String(body?.status || '').toUpperCase() === 'FAIL') {
+    const motivo = pareceNumeroInvalido(body)
+      ? 'numero_invalido'
+      : (res.status >= 400 ? 'myzap_http' : 'desconhecido');
     return {
       ok: false,
       endpoint: endpointNormalizado,
       requestBody,
       httpStatus: res.status,
       body,
-      erro: extractMyZapError(body, res.status)
+      erro: extractMyZapError(body, res.status),
+      codigo_http: res.status,
+      resposta_myzap: body,
+      motivo,
+      etapa: 'envio'
     };
   }
 
@@ -495,7 +755,11 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
       requestBody,
       httpStatus: res.status,
       body,
-      erro: 'Retorno do sendText diferente de 200'
+      erro: 'Retorno do sendText diferente de 200',
+      codigo_http: res.status,
+      resposta_myzap: body,
+      motivo: 'myzap_http',
+      etapa: 'envio'
     };
   }
 
@@ -504,7 +768,11 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
     endpoint: endpointNormalizado,
     requestBody,
     httpStatus: res.status,
-    body
+    body,
+    codigo_http: res.status,
+    resposta_myzap: body,
+    motivo: 'ok',
+    etapa: 'envio'
   };
 }
 
@@ -564,6 +832,14 @@ async function processarFilaUmaRodada() {
     }
   }
 
+  // Backoff de reconexao: enquanto o MyZap esteve indisponivel, espacamos as
+  // tentativas para nao acumular skips rapido demais (adia o auto-stop e da
+  // tempo de recuperacao). Durante a janela de backoff a rodada e adiada
+  // (skip silencioso); a recuperacao tem latencia de ate BACKOFF_MAX_MS.
+  if (backoffAteEm && Date.now() < backoffAteEm) {
+    return;
+  }
+
   processando = true;
   processandoDesde = Date.now();
 
@@ -576,14 +852,17 @@ async function processarFilaUmaRodada() {
     const configAtual = await obterCredenciaisAtivas();
     if (!configAtual.sessionKey || !configAtual.myzapApiToken) {
       consecutiveSkips++;
+      const atraso = aplicarBackoff();
       if (consecutiveSkips % SKIP_LOG_EVERY === 1) {
-        warn(`[FilaMyZap] Credenciais ausentes (skip #${consecutiveSkips})`, {
-          metadata: { consecutiveSkips }
+        warn(`[FilaMyZap] Credenciais ausentes (skip #${consecutiveSkips}, backoff ${atraso}ms)`, {
+          metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso }
         });
       }
+      // Auto-stop apenas como salvaguarda final; continua recuperavel se as
+      // credenciais voltarem antes do limite.
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
         warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos`, {
-          metadata: { area: 'whatsappQueueWatcher' }
+          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
         });
         stopWhatsappQueueWatcher();
       }
@@ -597,22 +876,30 @@ async function processarFilaUmaRodada() {
     );
     if (!myzapOk) {
       consecutiveSkips++;
+      const atraso = aplicarBackoff();
       if (consecutiveSkips % SKIP_LOG_EVERY === 1) {
-        warn(`[FilaMyZap] MyZap indisponivel (skip #${consecutiveSkips})`, {
-          metadata: { consecutiveSkips }
+        warn(`[FilaMyZap] MyZap indisponivel (skip #${consecutiveSkips}, backoff ${atraso}ms)`, {
+          metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso }
         });
       }
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
         warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos (MyZap down)`, {
-          metadata: { area: 'whatsappQueueWatcher' }
+          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
         });
         stopWhatsappQueueWatcher();
       }
       return;
     }
 
-    // MyZap ok, reset skip counter
+    // MyZap ok: reset do contador de skips e do backoff -> a fila volta a
+    // processar sozinha assim que o MyZap responder, sem restart manual.
+    if (consecutiveSkips > 0) {
+      info('[FilaMyZap] MyZap disponivel novamente, retomando processamento', {
+        metadata: { categoria: 'conexao', skipsAnteriores: consecutiveSkips }
+      });
+    }
     consecutiveSkips = 0;
+    limparBackoff();
 
     const pendentes = await listarPendentesMyZap();
     ultimosPendentes = Array.isArray(pendentes) ? pendentes : [];
@@ -640,14 +927,23 @@ async function processarFilaUmaRodada() {
       idfilial
     } = await obterCredenciaisAtivas();
 
+    // Agregacao de erros desta rodada: notifica o operador no maximo 1x por
+    // rodada (sem spam), com o motivo/idfila do primeiro erro e o total.
+    let errosNaRodada = 0;
+    let primeiroErroRodada = null;
+
     for (const mensagem of lote) {
       if (!ativo) break;
 
       let novoStatus = 'erro';
+      // Detalhe rico enviado ao backend apenas em caso de erro (retrocompativel).
+      let detalheErro = null;
+      // id real da msg no WhatsApp (so no sucesso) -> reportado p/ casar com o ACK.
+      let messageId = '';
       const filaIdfilial = String(mensagem?.idfilial || mensagem?.idempresa || idfilial || '').trim();
       try {
         info('[FilaMyZap] Enviando mensagem', {
-          metadata: { idfila: mensagem?.idfila, idfilial: filaIdfilial || null }
+          metadata: { categoria: 'envio', idfila: mensagem?.idfila, idfilial: filaIdfilial || null }
         });
 
         const envio = await enviarParaMyZap(mensagem, sessionKey, sessionName, myzapApiToken);
@@ -660,19 +956,42 @@ async function processarFilaUmaRodada() {
         ));
 
         if (envio.ok) {
+          messageId = extrairMessageId(envio.body);
           info('[FilaMyZap] Mensagem enviada com sucesso', {
-            metadata: { idfila: mensagem?.idfila, idfilial: filaIdfilial || null }
+            metadata: { categoria: 'envio', idfila: mensagem?.idfila, idfilial: filaIdfilial || null, messageId }
           });
         } else {
+          // Monta o detalhe do erro para o backend e para o log estruturado.
+          detalheErro = {
+            erro: envio?.erro || 'Falha no envio',
+            motivo: envio?.motivo || 'desconhecido',
+            codigo_http: Number.isFinite(envio?.codigo_http) ? envio.codigo_http : 0,
+            resposta_myzap: envio?.resposta_myzap ?? '',
+            etapa: envio?.etapa || 'envio'
+          };
+          // metadata.conteudo (string) e renderizado como <pre> no logViewer.
           warn('[FilaMyZap] Falha ao enviar mensagem para MyZap', {
             metadata: {
+              categoria: 'erro',
               idfila: mensagem?.idfila,
               idfilial: filaIdfilial || null,
-              motivo: envio?.erro || envio?.motivo
+              motivo: detalheErro.motivo,
+              codigo_http: detalheErro.codigo_http,
+              etapa: detalheErro.etapa,
+              erro: detalheErro.erro,
+              conteudo: truncarResposta(detalheErro.resposta_myzap)
             }
           });
         }
       } catch (envioError) {
+        // Excecao inesperada (fora do fluxo previsto de enviarParaMyZap).
+        detalheErro = {
+          erro: envioError?.message || String(envioError),
+          motivo: 'desconhecido',
+          codigo_http: 0,
+          resposta_myzap: '',
+          etapa: 'envio'
+        };
         registerRecentSend(buildRecentSendEntry(
           mensagem,
           null,
@@ -681,6 +1000,7 @@ async function processarFilaUmaRodada() {
         ));
         warn('Erro inesperado no envio para MyZap', {
           metadata: {
+            categoria: 'erro',
             idfila: mensagem?.idfila,
             idfilial: filaIdfilial || null,
             error: envioError
@@ -688,15 +1008,39 @@ async function processarFilaUmaRodada() {
         });
       }
 
-      const statusOk = await atualizarStatusFila(backendApiUrl, backendAuthorization, {
+      // Contabiliza falha desta mensagem para a agregacao da rodada.
+      if (novoStatus === 'erro') {
+        errosNaRodada++;
+        if (!primeiroErroRodada) {
+          primeiroErroRodada = {
+            idfila: mensagem?.idfila,
+            motivo: detalheErro?.motivo || 'desconhecido',
+            erro: detalheErro?.erro || 'Falha no envio'
+          };
+        }
+      }
+
+      const payloadStatus = {
         idfila: mensagem?.idfila,
         idfilial: filaIdfilial,
         status: novoStatus
-      });
+      };
+      // So no sucesso e quando o MyZap devolveu o id: backend grava p/ casar o ACK.
+      if (novoStatus === 'enviado' && messageId) {
+        payloadStatus.message_id = messageId;
+      }
+
+      const statusOk = await atualizarStatusFila(
+        backendApiUrl,
+        backendAuthorization,
+        payloadStatus,
+        detalheErro
+      );
 
       if (!statusOk) {
         warn('Nao foi possivel atualizar status da fila MyZap', {
           metadata: {
+            categoria: 'fila',
             idfila: mensagem?.idfila,
             idfilial: filaIdfilial || null,
             status: novoStatus
@@ -705,15 +1049,38 @@ async function processarFilaUmaRodada() {
       }
     }
 
+    // Notifica o operador 1x por rodada quando houve falha (agregado).
+    if (errosNaRodada > 0) {
+      recentErrorCount += errosNaRodada;
+      ultimoErro = primeiroErroRodada?.erro || ultimoErro;
+      atualizarTrayErros();
+      if (queueErrorNotifier) {
+        try {
+          queueErrorNotifier({
+            idfila: primeiroErroRodada?.idfila ?? null,
+            motivo: primeiroErroRodada?.motivo || 'desconhecido',
+            erro: primeiroErroRodada?.erro || 'Falha no envio',
+            total: errosNaRodada
+          });
+        } catch (notifyErr) {
+          warn('[FilaMyZap] Falha ao notificar operador sobre erro de envio', {
+            metadata: { categoria: 'erro', error: notifyErr?.message || String(notifyErr) }
+          });
+        }
+      }
+    }
+
     info('[FilaMyZap] Ciclo de processamento concluido', {
-      metadata: { area: 'whatsappQueueWatcher', loteProcessado: lote.length }
+      metadata: { categoria: 'fila', area: 'whatsappQueueWatcher', loteProcessado: lote.length, errosNaRodada }
     });
 
-    ultimoErro = null;
+    if (errosNaRodada === 0) {
+      ultimoErro = null;
+    }
   } catch (e) {
     ultimoErro = e?.message || String(e);
     error('Erro no watcher da fila MyZap', {
-      metadata: { area: 'whatsappQueueWatcher', error: e }
+      metadata: { categoria: 'erro', area: 'whatsappQueueWatcher', error: e }
     });
   } finally {
     processando = false;
@@ -817,7 +1184,12 @@ function getWhatsappQueueWatcherStatus() {
     ultimaExecucaoEm,
     proximaExecucaoEm,
     loopIntervalMs: LOOP_INTERVAL_MS,
-    ultimoErro
+    ultimoErro,
+    // Total acumulado de falhas de envio recentes (zerado em resetQueueErrorCount).
+    recentErrorCount,
+    // Instante (ms epoch) ate o qual a proxima rodada efetiva fica adiada (backoff).
+    backoffAteEm: backoffAteEm || null,
+    consecutiveSkips
   };
 }
 
@@ -829,6 +1201,12 @@ function getUltimosEnviosMyZap() {
   return Array.isArray(ultimosEnvios) ? [...ultimosEnvios] : [];
 }
 
+/** Zera o contador de erros recentes (ex.: quando o operador abre a fila). */
+function resetQueueErrorCount() {
+  recentErrorCount = 0;
+  atualizarTrayErros();
+}
+
 module.exports = {
   listarPendentesMyZap,
   getUltimosEnviosMyZap,
@@ -836,5 +1214,8 @@ module.exports = {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
   getWhatsappQueueWatcherStatus,
-  processarFilaUmaRodada
+  processarFilaUmaRodada,
+  setQueueErrorNotifier,
+  setTrayErrorCountSetter,
+  resetQueueErrorCount
 };

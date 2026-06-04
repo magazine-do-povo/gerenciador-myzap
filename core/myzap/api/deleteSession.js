@@ -36,12 +36,28 @@ async function deleteSession() {
             body: JSON.stringify({ session })
         });
 
+        // Nao tratar 401/403/erro HTTP com corpo JSON como sucesso. 401/403 =
+        // credencial/sessao invalida (acao: reconfigurar/reconectar), distinto de
+        // falha de rede (MyZap offline) que cai no catch abaixo.
+        if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+                error("Credencial recusada ao deletar sessão MyZap (deleteSession)", {
+                    metadata: { area: 'deleteSession', categoria: 'conexao', httpStatus: res.status }
+                });
+            } else {
+                warn("Resposta HTTP de erro ao deletar sessão MyZap", {
+                    metadata: { area: 'deleteSession', httpStatus: res.status }
+                });
+            }
+            return null;
+        }
+
         const data = await res.json();
         return data;
 
     } catch (e) {
         error("Erro ao deletar sessão MyZap", {
-            metadata: { area: 'deleteSession', error: e }
+            metadata: { area: 'deleteSession', error: (e && e.message) || String(e) }
         });
         return null;
     }

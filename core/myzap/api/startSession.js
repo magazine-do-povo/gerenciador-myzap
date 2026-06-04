@@ -2,6 +2,7 @@ const Store = require('electron-store');
 const store = new Store();
 const { warn, error, debug, info } = require('../myzapLogger').forArea('api');
 const getSessionSnapshot = require('./getSessionSnapshot');
+const { ensureBackendSession } = require('../backendAuth');
 
 /** Intervalo entre tentativas de buscar QR apos /start (ms) */
 const WAIT_QR_POLL_MS = 3000;
@@ -13,8 +14,55 @@ const WAIT_QR_TIMEOUT_MS = 240000;
  */
 const INITIALIZING_STUCK_THRESHOLD_MS = 45000;
 
+/** Timeout da busca do ack_webhook_url no backend (ms). */
+const ACK_WEBHOOK_TIMEOUT_MS = 8000;
+
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Pega no backend a URL (ja com token HMAC) do webhook de ACK, para o MyZap
+ * mandar entregue/lido direto ao Hub. Best-effort: qualquer falha -> '' (a
+ * sessao sobe sem webhook e o disparo segue normal; so nao havera entregue/lido).
+ * Usa o esquema de auth do destino (ensureBackendSession -> Authorization).
+ */
+async function obterAckWebhookUrl() {
+    try {
+        const session = await ensureBackendSession({ storeLike: store });
+        const backendApiUrl = String(session?.apiUrl || '').trim();
+        const authorization = String(session?.authorization || '').trim();
+        const idfilial = String(session?.idfilial || store.get('idfilial') || store.get('idempresa') || '').trim();
+        if (!backendApiUrl || !idfilial) {
+            return '';
+        }
+        const base = backendApiUrl.endsWith('/') ? backendApiUrl : `${backendApiUrl}/`;
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), ACK_WEBHOOK_TIMEOUT_MS);
+        try {
+            const res = await fetch(`${base}parametrizacao-myzap/config/${encodeURIComponent(idfilial)}`, {
+                method: 'GET',
+                headers: {
+                    Accept: 'application/json',
+                    ...(authorization ? { Authorization: authorization } : {})
+                },
+                signal: ctrl.signal
+            });
+            if (!res.ok) {
+                return '';
+            }
+            const data = await res.json();
+            const url = data && data.result && data.result.ack_webhook_url;
+            return typeof url === 'string' ? url.trim() : '';
+        } finally {
+            clearTimeout(timer);
+        }
+    } catch (e) {
+        debug('Falha ao obter ack_webhook_url (seguindo sem webhook)', {
+            metadata: { area: 'startSession', error: (e && e.message) || String(e) }
+        });
+        return '';
+    }
 }
 
 async function startSession() {
@@ -37,6 +85,15 @@ async function startSession() {
         return null;
     }
 
+    // URL do webhook de ACK (entregue/lido) que o MyZap deve chamar. Buscada 1x.
+    // Best-effort: se vier vazia, a sessao sobe normalmente sem o webhook.
+    const whMessage = await obterAckWebhookUrl();
+    if (whMessage) {
+        debug('Webhook de ACK sera configurado na sessao MyZap', {
+            metadata: { area: 'startSession', session }
+        });
+    }
+
     try {
         debug('Iniciando sessao MyZap', {
             metadata: { area: 'startSession', session, sessionName }
@@ -52,9 +109,28 @@ async function startSession() {
             body: JSON.stringify({
                 session,
                 sessionName: sessionName || session,
-                waitQrCode: true
+                waitQrCode: true,
+                // MyZap grava como webhook de mensagens (wh_message) e passa a
+                // mandar os ACKs (entregue/lido) para o Hub.
+                ...(whMessage ? { wh_message: whMessage } : {})
             })
         });
+
+        // Nao tratar 401/403/erro HTTP com corpo JSON como sucesso. 401/403 =
+        // credencial/sessao invalida (acao: reconfigurar/reconectar), distinto de
+        // falha de rede (MyZap offline) que cai no catch abaixo.
+        if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+                error('Credencial recusada ao iniciar sessao MyZap (start)', {
+                    metadata: { area: 'startSession', categoria: 'conexao', httpStatus: res.status }
+                });
+            } else {
+                warn('Resposta HTTP de erro ao iniciar sessao MyZap', {
+                    metadata: { area: 'startSession', httpStatus: res.status }
+                });
+            }
+            return null;
+        }
 
         const data = await res.json();
         debug('Resposta startSession', {
