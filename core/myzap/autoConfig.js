@@ -382,6 +382,12 @@ async function fetchRemoteMyZapCredentials({ apiBaseUrl, idfilial }) {
     });
 
     const endpoints = [
+        // Resolve a sessao do OPERADOR pelo JWT (mdp_<idusuario>_<idfilial>),
+        // a mesma para a qual o Hub enfileira. Tem que vir ANTES das rotas por
+        // filial: estas devolvem a sessao da filial (fl<idfilial>) e causavam o
+        // descasamento (worker conectava fl10001 e o envio batia em mdp_..._...).
+        // Se o Hub for antigo (sem o endpoint), cai nas rotas por filial abaixo.
+        `parametrizacao-myzap/config-ativa`,
         `myzap/config/${idfilial}`,
         `parametrizacao-myzap/config/${idfilial}`,
         `parametrizacao-myzap/configuracao/${idfilial}`
