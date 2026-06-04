@@ -90,8 +90,6 @@ const store = new Store({
 });
 
 let myzapConfigRefreshTimer = null;
-// Guard do shutdown limpo no before-quit (encerra sessao + mata MyZap/porta 1x).
-let myzapShutdownDone = false;
 let queueAutoStartTimer = null;
 let myzapEnsureLoopTimer = null;
 let myzapManualUpdateInProgress = false;
@@ -802,7 +800,7 @@ if (!hasSingleInstanceLock) {
 
   app.on('window-all-closed', (e) => e.preventDefault());
 
-  app.on('before-quit', (e) => {
+  app.on('before-quit', () => {
     // Para timers/watchers sempre (rapido, sincrono).
     if (myzapConfigRefreshTimer) {
       clearInterval(myzapConfigRefreshTimer);
@@ -816,31 +814,19 @@ if (!hasSingleInstanceLock) {
     stopMyzapStatusWatcher();
     stopTokenSyncWatcher();
 
-    // Encerra TUDO ao sair: fecha a sessao no MyZap, mata o processo MyZap
-    // (e o Chromium filho via taskkill /T) e libera a porta 5555. Sem isso,
-    // sobravam sessao/Chromium/porta orfaos -> "lixo/cache" e a porta ficava
-    // ocupada, fazendo a proxima abertura reusar o MyZap velho (sessao antiga)
-    // e travar em "inicializando" sem gerar QR.
-    if (myzapShutdownDone) {
-      return; // 2a passada: limpeza ja feita, deixa o app sair de verdade.
-    }
-    e.preventDefault();
-    (async () => {
-      try {
-        // Best-effort + timeout: nao travar o fechamento se o MyZap nao responder.
-        await Promise.race([
-          deleteSession().catch(() => {}),
-          new Promise((resolve) => setTimeout(resolve, 4000)),
-        ]);
-      } catch (_e) { /* melhor esforco */ }
+    // Ao sair: mata o processo MyZap (taskkill /T pega o Chromium filho) e
+    // libera a porta 5555 — sem orfaos/lixo e sem deixar a porta ocupada (o que
+    // fazia a proxima abertura reusar o MyZap velho e travar em "inicializando").
+    //
+    // IMPORTANTE: NAO chamar deleteSession aqui. No MyZap, deleteSession faz
+    // client.logout() + limpa os arquivos da sessao -> APAGA a autenticacao e
+    // exigiria escanear o QR de novo. Matar o processo NAO desloga: a auth
+    // (.wwebjs_auth) fica no disco, entao no proximo boot/abertura o MyZap
+    // RECONECTA sozinho, sem QR (mesmo comportamento de hoje ao desligar o PC).
+    try { killMyZapProcess(); } catch (_e) { /* melhor esforco */ }
+    try { killProcessesOnPort(5555); } catch (_e) { /* melhor esforco */ }
 
-      try { killMyZapProcess(); } catch (_e) { /* melhor esforco */ }
-      try { killProcessesOnPort(5555); } catch (_e) { /* melhor esforco */ }
-
-      myzapInfo('Gerenciador encerrado: sessao MyZap fechada, processo e porta 5555 liberados.');
-      myzapShutdownDone = true;
-      app.quit();
-    })();
+    myzapInfo('Gerenciador encerrado: processo MyZap e porta 5555 liberados (auth preservada para reconexao automatica).');
   });
 
   ipcMain.handle('settings:get', (_e, key) => store.get(key));
