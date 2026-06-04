@@ -90,6 +90,8 @@ const store = new Store({
 });
 
 let myzapConfigRefreshTimer = null;
+// Guard do shutdown limpo no before-quit (encerra sessao + mata MyZap/porta 1x).
+let myzapShutdownDone = false;
 let queueAutoStartTimer = null;
 let myzapEnsureLoopTimer = null;
 let myzapManualUpdateInProgress = false;
@@ -800,7 +802,8 @@ if (!hasSingleInstanceLock) {
 
   app.on('window-all-closed', (e) => e.preventDefault());
 
-  app.on('before-quit', () => {
+  app.on('before-quit', (e) => {
+    // Para timers/watchers sempre (rapido, sincrono).
     if (myzapConfigRefreshTimer) {
       clearInterval(myzapConfigRefreshTimer);
       myzapConfigRefreshTimer = null;
@@ -812,6 +815,32 @@ if (!hasSingleInstanceLock) {
     stopWhatsappQueueWatcher();
     stopMyzapStatusWatcher();
     stopTokenSyncWatcher();
+
+    // Encerra TUDO ao sair: fecha a sessao no MyZap, mata o processo MyZap
+    // (e o Chromium filho via taskkill /T) e libera a porta 5555. Sem isso,
+    // sobravam sessao/Chromium/porta orfaos -> "lixo/cache" e a porta ficava
+    // ocupada, fazendo a proxima abertura reusar o MyZap velho (sessao antiga)
+    // e travar em "inicializando" sem gerar QR.
+    if (myzapShutdownDone) {
+      return; // 2a passada: limpeza ja feita, deixa o app sair de verdade.
+    }
+    e.preventDefault();
+    (async () => {
+      try {
+        // Best-effort + timeout: nao travar o fechamento se o MyZap nao responder.
+        await Promise.race([
+          deleteSession().catch(() => {}),
+          new Promise((resolve) => setTimeout(resolve, 4000)),
+        ]);
+      } catch (_e) { /* melhor esforco */ }
+
+      try { killMyZapProcess(); } catch (_e) { /* melhor esforco */ }
+      try { killProcessesOnPort(5555); } catch (_e) { /* melhor esforco */ }
+
+      myzapInfo('Gerenciador encerrado: sessao MyZap fechada, processo e porta 5555 liberados.');
+      myzapShutdownDone = true;
+      app.quit();
+    })();
   });
 
   ipcMain.handle('settings:get', (_e, key) => store.get(key));
