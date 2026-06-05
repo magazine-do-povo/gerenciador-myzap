@@ -951,15 +951,32 @@ async function checkRealConnection() {
     // Como ja validamos o servico acima, null aqui significa sessao ainda inicializando
     // — tratar como estado transitorio amarelo, nao como erro.
     if (!response || (!response.dbStatus && !response.status)) {
+      // Sem status = MyZap nao tem sessao registrada.
+      // So tratar como "inicializando" DENTRO da janela de boot (logo apos clicar
+      // Iniciar) — ai e transitorio. Passou disso e ainda sem sessao, NAO ficar
+      // em loop: mostrar "nao iniciada" e LIBERAR o botao Iniciar pro operador.
+      if (Date.now() < sessionBootDeadline) {
+        statusIndicator.className = 'status-indicator waiting';
+        statusIndicator.textContent = 'Sessao inicializando...';
+        qrBox.innerHTML = `
+          <div class="initializing-feedback">
+            <span class="spinner-border spinner-border-sm" role="status"></span>
+            MyZap esta preparando a sessao do WhatsApp. Aguarde o QR Code...
+          </div>
+        `;
+        setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
+        setIaConfigVisibility(false);
+        return { isConnected: false, isQrWaiting: false, response: null };
+      }
+
       statusIndicator.className = 'status-indicator waiting';
-      statusIndicator.textContent = 'Sessao inicializando...';
+      statusIndicator.textContent = 'Sessao nao iniciada!';
       qrBox.innerHTML = `
-        <div class="initializing-feedback">
-          <span class="spinner-border spinner-border-sm" role="status"></span>
-          MyZap respondeu mas a sessao ainda esta preparando. Aguarde o QR Code...
-        </div>
+        <span class="text-muted-small">
+          Nenhuma sessao ativa no MyZap. Clique em "Iniciar instancia" para comecar.
+        </span>
       `;
-      setButtonsState({ canStart: false, canDelete: false, canSendTest: false });
+      setButtonsState({ canStart: true, canDelete: false, canSendTest: false });
       setIaConfigVisibility(false);
       return { isConnected: false, isQrWaiting: false, response: null };
     }
