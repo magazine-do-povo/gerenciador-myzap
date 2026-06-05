@@ -1630,9 +1630,11 @@ async function salvarMensagemPadrao() {
   const btnSave = document.getElementById('btn-save-ia-config');
   const mensagemPadrao = textarea?.value?.trim() || '';
 
+  // Vazio e permitido: significa DESLIGAR a mensagem padrao. O MyZap nao envia
+  // nada quando ela esta vazia (sendDefault retorna sem enviar).
   if (!mensagemPadrao) {
-    alert('Informe uma mensagem padrao antes de salvar.');
-    return;
+    const ok = confirm('Deixar a mensagem padrao VAZIA desativa o envio automatico: o MyZap nao vai enviar nenhuma mensagem padrao. Confirmar?');
+    if (!ok) return;
   }
 
   btnSave.disabled = true;
@@ -1653,7 +1655,9 @@ async function salvarMensagemPadrao() {
       return;
     }
 
-    alert('Mensagem padrao atualizada com sucesso.');
+    alert(mensagemPadrao
+      ? 'Mensagem padrao atualizada com sucesso.'
+      : 'Mensagem padrao desativada: o MyZap nao vai enviar mensagem padrao.');
   } catch (err) {
     console.error('Erro ao atualizar mensagem padrao:', err);
     alert(`Erro ao atualizar mensagem padrao: ${err?.message || err}`);
