@@ -21,6 +21,10 @@ async function verifyRealStatus() {
         return null;
     }
 
+    // Timeout: evita travar o reload/poll quando o MyZap aceita a conexao mas
+    // nao responde (ex.: sessao pendurada na inicializacao).
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
         debug("Verificando status real MyZap", {
             metadata: { area: 'verifyRealStatus', session }
@@ -33,7 +37,8 @@ async function verifyRealStatus() {
                 apitoken: token,
                 sessionkey: session
             },
-            body: JSON.stringify({ session })
+            body: JSON.stringify({ session }),
+            signal: ctrl.signal
         });
 
         // Nao tratar 401/403/erro HTTP com corpo JSON como sucesso. 401/403 =
@@ -60,6 +65,8 @@ async function verifyRealStatus() {
             metadata: { area: 'verifyRealStatus', error: (e && e.message) || String(e) }
         });
         return null;
+    } finally {
+        clearTimeout(timer);
     }
 }
 

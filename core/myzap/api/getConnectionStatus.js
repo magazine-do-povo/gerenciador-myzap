@@ -21,6 +21,10 @@ async function getConnectionStatus() {
         return [];
     }
 
+    // Timeout: evita travar o reload/poll quando o MyZap aceita a conexao mas
+    // nao responde (ex.: sessao pendurada na inicializacao).
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 8000);
     try {
         const res = await fetch(`${api}getConnectionStatus`, {
             method: "POST",
@@ -29,7 +33,8 @@ async function getConnectionStatus() {
                 "Content-Type": "application/json",
                 apitoken: token,
                 sessionkey: session
-            }
+            },
+            signal: ctrl.signal
         });
 
         // Nao tratar 401/403/erro HTTP com corpo JSON como sucesso (preserva shape: []).
@@ -56,6 +61,8 @@ async function getConnectionStatus() {
             metadata: { area: 'getConnectionStatus', error: (e && e.message) || String(e) }
         });
         return [];
+    } finally {
+        clearTimeout(timer);
     }
 }
 

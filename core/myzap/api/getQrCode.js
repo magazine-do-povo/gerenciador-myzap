@@ -21,13 +21,19 @@ async function getQrCode() {
   }
 
   const api = 'http://localhost:5555/';
+  // Timeout obrigatorio: sem ele, se o /getQrCode pendurar (ex.: sessao travando
+  // na inicializacao), o fetch ficava preso e segurava o getSessionSnapshot ->
+  // o botao de reload e o polling do "Iniciar instancia" travavam.
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 4000);
   try {
     const res = await fetch(`${api}getQrCode/${encodeURIComponent(session)}`, {
       method: 'GET',
       headers: {
         apitoken: token,
         sessionkey: session
-      }
+      },
+      signal: ctrl.signal
     });
 
     // 404 = sessao ainda sem QR (normal no inicio); qualquer nao-2xx -> sem QR.
@@ -48,10 +54,12 @@ async function getQrCode() {
 
     return `data:image/png;base64,${buf.toString('base64')}`;
   } catch (e) {
-    debug('getQrCode: falha ao buscar QR direto do MyZap', {
+    debug('getQrCode: falha/timeout ao buscar QR direto do MyZap', {
       metadata: { area: 'getQrCode', error: (e && e.message) || String(e) }
     });
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
