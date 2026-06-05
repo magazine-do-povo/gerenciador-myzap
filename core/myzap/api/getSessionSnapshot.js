@@ -1,6 +1,7 @@
 const Store = require('electron-store');
 const getConnectionStatus = require('./getConnectionStatus');
 const verifyRealStatus = require('./verifyRealStatus');
+const getQrCode = require('./getQrCode');
 const { parseSessionPayload, mergeSessionPayloads } = require('./sessionSnapshotParser');
 const { debug, warn } = require('../myzapLogger').forArea('api');
 
@@ -83,6 +84,19 @@ async function getSessionSnapshot() {
         if (cached?.qrCode) {
             qrCode = cached.qrCode;
         }
+    }
+
+    // Fallback: o verify/connection nem sempre carregam o QR durante a
+    // inicializacao (status 'initializing'/'disconnected'), fazendo o painel
+    // travar em "aguardando QR" enquanto a UI web do MyZap ja mostra o codigo.
+    // Busca direto no endpoint dedicado /getQrCode (imagem PNG -> data URL).
+    if (!qrCode && !['connected', 'not_found'].includes(merged.sessionStatus)) {
+        try {
+            const direct = await getQrCode();
+            if (direct) {
+                qrCode = direct;
+            }
+        } catch (_e) { /* best-effort */ }
     }
 
     persistCachedQr(merged.sessionStatus, qrCode);
