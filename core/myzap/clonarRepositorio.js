@@ -11,13 +11,13 @@ const {
   refreshPathWindows,
   getSystemGitCommand,
   getPrivilegeStatus,
-  buildAdminRequiredMessage,
-} = require('./processUtils');
+  buildAdminRequiredMessage, waitForPortFree } = require('./processUtils');
 const { ensureSystemNodeInstalled, ensureSystemGitInstalled } = require('./systemToolInstaller');
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 const { downloadRepositoryArchive } = require('./repositoryArchive');
+const { fetchRemoteMainSha, setInstalledSha } = require('./updateChecker');
 const { createInstallDebugLogContext } = require('./installDebugLog');
 const {
   assertDependenciesHealthy,
@@ -180,7 +180,9 @@ async function obterCodigoMyZap(dirPath, reportProgress, debugLog) {
     dirPath,
   });
 
+  const shaParaInstalar = String(options.sha || '').trim() || await fetchRemoteMainSha() || '';
   await downloadRepositoryArchive(dirPath, {
+    sha: shaParaInstalar,
     onProgress: reportProgress,
     debugLog,
   });
@@ -744,7 +746,7 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       }
 
       await new Promise((resolve) => {
-        setTimeout(resolve, 500);
+        setTimeout(resolve, 200);
       });
 
       // Backup nao-destrutivo de .env, database e sessao WhatsApp antes do nuke
@@ -861,6 +863,23 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       return attachDebugLog(syncResult, debugLog);
     }
 
+    if (shaParaInstalar) {
+      setInstalledSha(shaParaInstalar);
+    }
+
+    // skipStart: usado pela reinstalacao preservando dados — a sessao/banco
+    // sao restaurados ANTES do start.
+    if (options.skipStart) {
+      reportProgress('MyZap instalado (start adiado pelo chamador).', 'installed_no_start', {
+        percent: 90,
+        dirPath,
+      });
+      return attachDebugLog({
+        status: 'success',
+        message: 'MyZap instalado e configurado (sem iniciar).',
+      }, debugLog);
+    }
+
     reportProgress('Iniciando servico local do MyZap...', 'start_service', {
       percent: 88,
       dirPath,
@@ -888,3 +907,5 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
 }
 
 module.exports = clonarRepositorio;
+// Reusado pelo updateMyZap para rodar pnpm install com o mesmo watchdog.
+module.exports.rodarComando = rodarComando;

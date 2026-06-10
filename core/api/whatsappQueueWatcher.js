@@ -10,7 +10,8 @@ const {
 const { ensureBackendSession } = require('../myzap/backendAuth');
 
 const store = new Store();
-const MYZAP_API_URL = 'http://localhost:5555/';
+// 127.0.0.1 (e nao localhost, que pode resolver ::1 no Windows e dar timeout)
+const MYZAP_API_URL = 'http://127.0.0.1:5555/';
 const LOOP_INTERVAL_MS = 3000;
 const FETCH_TIMEOUT_MS = 15000;
 const PROCESSANDO_TIMEOUT_MS = 120000;
@@ -40,6 +41,43 @@ let ultimosPendentes = [];
 let ultimosEnvios = [];
 let consecutiveSkips = 0;
 const MAX_CONSECUTIVE_SKIPS = 10;
+
+// 'aguardando_myzap' | 'aguardando_credenciais' | null — pausa RECUPERAVEL
+// (substitui o antigo auto-stop definitivo: a fila nunca mais morre sozinha)
+let motivoPausa = null;
+let notifyCallback = null;
+let ultimoToastPausaAt = 0;
+const PAUSA_TOAST_COOLDOWN_MS = 10 * 60 * 1000;
+
+function setQueueNotifier(fn) {
+  notifyCallback = (typeof fn === 'function') ? fn : null;
+}
+
+function notificarFila(mensagem, { comCooldown = false } = {}) {
+  if (!notifyCallback) return;
+  if (comCooldown) {
+    const agora = Date.now();
+    if (agora - ultimoToastPausaAt < PAUSA_TOAST_COOLDOWN_MS) return;
+    ultimoToastPausaAt = agora;
+  }
+  try { notifyCallback(mensagem); } catch (_e) { /* melhor esforco */ }
+}
+
+function entrarEmPausa(motivo, mensagem) {
+  if (motivoPausa === motivo) return;
+  motivoPausa = motivo;
+  warn(`[FilaMyZap] Fila pausada (${motivo}) — retoma sozinha quando resolver`, {
+    metadata: { categoria: 'conexao', motivo, consecutiveSkips }
+  });
+  notificarFila(mensagem, { comCooldown: true });
+}
+
+function sairDaPausa() {
+  if (!motivoPausa) return;
+  motivoPausa = null;
+  info('[FilaMyZap] Fila retomada automaticamente', { metadata: { categoria: 'conexao' } });
+  notificarFila('Fila de mensagens retomada: MyZap respondendo novamente.');
+}
 const SKIP_LOG_EVERY = 5;
 
 /**
@@ -858,13 +896,10 @@ async function processarFilaUmaRodada() {
           metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso }
         });
       }
-      // Auto-stop apenas como salvaguarda final; continua recuperavel se as
-      // credenciais voltarem antes do limite.
+      // A fila NUNCA se auto-desliga: entra em pausa visivel e retoma sozinha.
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_credenciais',
+          'Fila de mensagens pausada: aguardando credenciais do MyZap. Ela retoma sozinha.');
       }
       return;
     }
@@ -883,10 +918,8 @@ async function processarFilaUmaRodada() {
         });
       }
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos (MyZap down)`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_myzap',
+          'Fila de mensagens pausada: aguardando o MyZap voltar a responder. Ela retoma sozinha.');
       }
       return;
     }
@@ -900,6 +933,7 @@ async function processarFilaUmaRodada() {
     }
     consecutiveSkips = 0;
     limparBackoff();
+    sairDaPausa();
 
     const pendentes = await listarPendentesMyZap();
     ultimosPendentes = Array.isArray(pendentes) ? pendentes : [];
@@ -1163,6 +1197,7 @@ function stopWhatsappQueueWatcher() {
 
   ativo = false;
   processando = false;
+  motivoPausa = null;
 
   info('Watcher da fila MyZap parado', {
     metadata: { area: 'whatsappQueueWatcher' }
@@ -1208,6 +1243,7 @@ function resetQueueErrorCount() {
 }
 
 module.exports = {
+  setQueueNotifier,
   listarPendentesMyZap,
   getUltimosEnviosMyZap,
   getUltimosPendentesMyZap,

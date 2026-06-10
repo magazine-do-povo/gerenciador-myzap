@@ -7,6 +7,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  dialog,
   ipcMain,
   shell
 } = require('electron');
@@ -24,6 +25,8 @@ const {
   getWhatsappQueueWatcherStatus,
   setQueueErrorNotifier,
   setTrayErrorCountSetter
+,
+  setQueueNotifier
 } = require('./core/api/whatsappQueueWatcher');
 const {
   startMyzapStatusWatcher,
@@ -45,6 +48,15 @@ const { createManualSetupWindow } = require('./core/windows/manualSetup');
 const trayManager = require('./core/windows/tray');
 const { registerMyZapHandlers } = require('./core/ipc/myzap');
 const { attachAutoUpdaterHandlers, checkForUpdates } = require('./core/updater');
+const {
+  startSupervisor,
+  stopSupervisor,
+  getSupervisorStatus,
+  forceRepair
+} = require('./core/myzap/supervisor');
+const { checkAndUpdateIfNeeded } = require('./core/myzap/updateChecker');
+const { runPostUpdateRepairIfNeeded } = require('./core/myzap/firstRunRepair');
+const { offerPerUserMigration, redirectToPerUserIfInstalled } = require('./core/migracaoInstalador');
 const { ensureMyZapReadyAndStart, refreshRemoteConfigAndSyncIa } = require('./core/myzap/autoConfig');
 const {
   buildBackendProfileKey,
@@ -375,7 +387,7 @@ function applyMyZapRuntimeByMode(trigger = 'runtime_apply') {
   lastKnownModoIntegracao = modoAtual;
 
   if (isMyZapModoLocal()) {
-    scheduleMyZapEnsureLoop();
+    startSupervisor({ onNotify: (msg) => trayManager.notify(msg) });
     applyOptionalWatchersByCapabilities(trigger);
     rebuildTrayMenu();
     return;
@@ -383,6 +395,7 @@ function applyMyZapRuntimeByMode(trigger = 'runtime_apply') {
 
   clearQueueAutoStartTimer();
   clearMyZapEnsureLoopTimer();
+  stopSupervisor();
 
   stopWhatsappQueueWatcher();
   stopMyzapStatusWatcher();
@@ -500,6 +513,45 @@ async function toggleMyzap() {
   rebuildTrayMenu();
 }
 
+let reparoManualEmAndamento = false;
+
+/** Reparo de 1 clique: kill arvore -> start -> se preciso, reinstala preservando a sessao. */
+async function repararMyZapAgora() {
+  if (reparoManualEmAndamento) {
+    toast('Reparo ja em andamento, aguarde...');
+    return { status: 'busy', message: 'Reparo ja em andamento.' };
+  }
+
+  if (!hasValidConfigMyZap()) {
+    toast('Configure a API antes de reparar o MyZap');
+    createSettings();
+    return { status: 'error', message: 'Configuracao base ausente.' };
+  }
+
+  if (!isMyZapModoLocal()) {
+    toast('Modo web/online ativo: nao ha servico local para reparar.');
+    return { status: 'skipped', message: 'Modo web/online ativo.' };
+  }
+
+  reparoManualEmAndamento = true;
+  toast('Reparando o MyZap... isso pode levar alguns minutos.');
+
+  try {
+    const result = await forceRepair();
+    toast(result?.message || 'Reparo finalizado.');
+    if (result?.status === 'success') {
+      applyMyZapRuntimeByMode('manual_repair');
+      enviarStatusMyZap().catch(() => {});
+    }
+    return result;
+  } catch (err) {
+    toast('Erro inesperado ao reparar o MyZap. Veja os logs.');
+    return { status: 'error', message: err?.message || String(err) };
+  } finally {
+    reparoManualEmAndamento = false;
+  }
+}
+
 function handleUpdateCheck() {
   checkForUpdates(autoUpdater, { toast, warn });
 }
@@ -531,7 +583,20 @@ async function updateMyZapNow() {
     }
 
     if (result?.status === 'success') {
-      toast('MyZap atualizado e reiniciado com sucesso');
+      // update real de CODIGO por commit SHA (manual; com o usuario presente)
+      const codeResult = await checkAndUpdateIfNeeded();
+      if (codeResult?.status === 'success' && codeResult?.upToDate) {
+        toast('MyZap ja esta na versao mais recente. Configuracoes reaplicadas.');
+      } else if (codeResult?.status === 'success') {
+        toast('MyZap atualizado para a versao mais recente!');
+      } else if (codeResult?.status === 'busy') {
+        toast('Outra operacao do MyZap em andamento. Tente novamente em instantes.');
+      } else if (codeResult?.status === 'skipped') {
+        toast('MyZap reiniciado. Nao foi possivel checar nova versao (sem rede?).');
+      } else {
+        toast(`Falha ao atualizar codigo do MyZap: ${codeResult?.message || 'erro desconhecido'}`);
+      }
+
       if (isMyZapModoLocal()) {
         enviarStatusMyZap().catch((err) => {
           myzapWarn('Falha ao enviar status apos atualizacao manual do MyZap', {
@@ -731,14 +796,30 @@ if (!hasSingleInstanceLock) {
 } else {
   app.on('second-instance', handleSecondInstanceLaunch);
 
-  attachAutoUpdaterHandlers(autoUpdater, { toast });
+  attachAutoUpdaterHandlers(autoUpdater, { toast, getQueueStatus: getWhatsappQueueWatcherStatus });
+  setQueueNotifier((msg) => trayManager.notify(msg));
 
   app.whenReady().then(() => {
+    // Casca antiga (Program Files) com a versao por usuario ja instalada:
+    // abre o app novo e fecha este, sem dialogo (mata o loop de ofertas).
+    if (redirectToPerUserIfInstalled({ app })) {
+      return;
+    }
+
     configureAutoLaunch();
 
     info('Aplicacao pronta para uso', {
       metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
     });
+
+    // Instalacao perMachine antiga: baixa o Setup novo e oferece a migracao
+    // (1 dialogo, cooldown 24h); o instalador remove a antiga e reabre.
+    if (app.isPackaged && process.platform === 'win32'
+      && /\\Program Files( \(x86\))?\\/i.test(process.execPath)) {
+      setTimeout(() => {
+        offerPerUserMigration({ app, dialog, toast }).catch(() => {});
+      }, 30 * 1000);
+    }
 
     trayManager.init(
       path.join(__dirname, 'assets/icon.png'),
@@ -746,6 +827,7 @@ if (!hasSingleInstanceLock) {
         createSettings,
         toggleMyzap,
         updateMyZapNow,
+        repararMyZapAgora,
         createPainelMyZap,
         createFilaMyZap,
         createManualSetupWindow,
@@ -793,7 +875,24 @@ if (!hasSingleInstanceLock) {
       }
     } catch (_e) { /* melhor esforco */ }
 
-    autoStartMyZap();
+    // Primeiro boot desta versao: saneia heranca da versao anterior (zumbis
+    // na porta, progresso travado) ANTES de subir o MyZap.
+    runPostUpdateRepairIfNeeded(app.getVersion())
+      .catch(() => {})
+      .finally(() => {
+        autoStartMyZap();
+      });
+
+    // Registra a versao atual do MyZap como baseline (NUNCA atualiza codigo
+    // sozinho — update de codigo e so pelo botao, com o usuario presente).
+    setTimeout(() => {
+      try {
+        const { getInstalledSha, setInstalledSha, fetchRemoteMainSha } = require('./core/myzap/updateChecker');
+        if (!getInstalledSha()) {
+          fetchRemoteMainSha().then((sha) => { if (sha) setInstalledSha(sha); }).catch(() => {});
+        }
+      } catch (_e) { /* melhor esforco */ }
+    }, 2 * 60 * 1000);
     scheduleMyZapConfigRefresh();
     handleUpdateCheck();
   });
@@ -809,6 +908,7 @@ if (!hasSingleInstanceLock) {
 
     clearQueueAutoStartTimer();
     clearMyZapEnsureLoopTimer();
+    stopSupervisor();
 
     stopWhatsappQueueWatcher();
     stopMyzapStatusWatcher();
@@ -830,6 +930,8 @@ if (!hasSingleInstanceLock) {
   });
 
   ipcMain.handle('settings:get', (_e, key) => store.get(key));
+  ipcMain.handle('myzap:getSupervisorStatus', () => getSupervisorStatus());
+  ipcMain.handle('myzap:repairService', () => repararMyZapAgora());
   ipcMain.handle('myzap:getManualSetupInfo', async () => {
     try {
       const info = ensureManualSetupGuideFile();

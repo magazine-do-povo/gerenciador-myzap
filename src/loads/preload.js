@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   readEnvSecrets: () => ipcRenderer.invoke('myzap:readEnvSecrets'),
   resetEnvironment: (options) => ipcRenderer.invoke('myzap:resetEnvironment', options),
   getStateSnapshot: () => ipcRenderer.invoke('myzap:getStateSnapshot'),
+  getSupervisorStatus: () => ipcRenderer.invoke('myzap:getSupervisorStatus'),
+  repairService: () => ipcRenderer.invoke('myzap:repairService'),
   clearUserRemovedFlag: () => ipcRenderer.invoke('myzap:clearUserRemovedFlag'),
   getManualSetupInfo: () => ipcRenderer.invoke('myzap:getManualSetupInfo'),
   openManualSetupGuide: () => ipcRenderer.invoke('myzap:openManualSetupGuide'),

@@ -1,6 +1,7 @@
 const Store = require('electron-store');
 const { info, warn, debug } = require('./myzapLogger').forArea('runtime');
 
+const opLock = require('./opLock');
 const store = new Store();
 const PROGRESS_KEY = 'myzap_progress';
 
@@ -10,6 +11,8 @@ function getCurrentProgress() {
 }
 
 function writeProgress(payload = {}) {
+    // progresso real alimenta o heartbeat do lock de ciclo de vida
+    opLock.touch();
     const current = getCurrentProgress();
     const now = Date.now();
     const merged = {
