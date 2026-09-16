@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld('api', {
   getSessionSnapshot: () => ipcRenderer.invoke('myzap:getSessionSnapshot'),
   verifyRealStatus: () => ipcRenderer.invoke('myzap:verifyRealStatus'),
   startSession: () => ipcRenderer.invoke('myzap:startSession'),
+  // Conectar sem deletar a sessao (o QR deixa de sumir durante a inicializacao).
+  connectSession: () => ipcRenderer.invoke('myzap:connectSession'),
+  // Unico caminho destrutivo, so por acao do usuario.
+  forceReconnect: () => ipcRenderer.invoke('myzap:forceReconnect'),
+  testConnection: () => ipcRenderer.invoke('myzap:testConnection'),
+  cancelarPendentesBackend: () => ipcRenderer.invoke('myzap:cancelarPendentesBackend'),
   deleteSession: () => ipcRenderer.invoke('myzap:deleteSession'),
   sendTestMessage: () => ipcRenderer.invoke('myzap:sendTestMessage'),
   updateIaConfig: (mensagemPadrao) => ipcRenderer.invoke('myzap:updateIaConfig', mensagemPadrao),

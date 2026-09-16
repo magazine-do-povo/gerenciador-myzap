@@ -129,4 +129,15 @@ async function getSessionSnapshot() {
     };
 }
 
+// Descarta o QR cacheado. Usado pelo fluxo de "Forcar reconexao" (connectSession),
+// para o painel nao exibir o QR da sessao que acabou de ser destruida.
+function clearCachedQr() {
+    store.delete(LAST_QR_SNAPSHOT_KEY);
+}
+
+// Export duplo de proposito: os consumidores antigos fazem
+// `require('./getSessionSnapshot')` e chamam direto como funcao; os novos usam
+// destructuring (`{ getSessionSnapshot, clearCachedQr }`), como na base da JZTech.
 module.exports = getSessionSnapshot;
+module.exports.getSessionSnapshot = getSessionSnapshot;
+module.exports.clearCachedQr = clearCachedQr;

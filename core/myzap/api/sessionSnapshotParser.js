@@ -131,6 +131,17 @@ function hasKeyword(value, keywords = []) {
     return keywords.some((keyword) => normalized.includes(String(keyword).toLowerCase()));
 }
 
+/**
+ * Match por PALAVRA INTEIRA (\b): evita o falso positivo classico em que o
+ * estado transitorio "OPENING" (carregando, SEM login) casava com a keyword
+ * "open" por substring e o painel mostrava "Conectado" sem QR lido.
+ */
+function hasWholeWord(value, words = []) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized) return false;
+    return words.some((word) => new RegExp(`\\b${word}\\b`, 'i').test(normalized));
+}
+
 function emptyParsed(rawPayload) {
     return {
         raw: rawPayload,
@@ -142,6 +153,7 @@ function emptyParsed(rawPayload) {
         isConnected: false,
         isQrWaiting: false,
         isNotFound: false,
+        isInitializing: false,
         hasData: false
     };
 }
@@ -183,12 +195,15 @@ function parseSessionPayload(payload) {
     const qrCode = normalizeQr(qrRaw);
     const joint = [status, state, realStatus, message].join(' ').toLowerCase();
 
-    const isConnected = hasKeyword(joint, [
+    // PALAVRA INTEIRA: "OPENING" (subindo, sem login) nao pode casar com "open".
+    const isConnected = hasWholeWord(joint, [
         'connected',
         'open',
         'authenticated',
         'online',
-        'ativo'
+        'ativo',
+        'islogged',
+        'inchat'
     ]);
 
     const isNotFound = hasKeyword(joint, [
@@ -211,6 +226,23 @@ function parseSessionPayload(payload) {
         'aguardando qr'
     ]);
 
+    // Estado TRANSITORIO de subida da sessao (Chrome/Puppeteer carregando). NAO e
+    // "nao existe" nem "desconectado": o QR vem em seguida (dezenas de segundos).
+    // Distingui-lo evita o delete prematuro que apagava a sessao no meio da
+    // inicializacao (o MyZap responde 404/INITIALIZING enquanto o client ainda
+    // nao esta em memoria, mesmo ja tendo gerado o QR).
+    const isInitializing = !isConnected && !qrCode && !isQrWaiting && hasKeyword(joint, [
+        'initializing',
+        'inicializando',
+        'starting',
+        'startup',
+        'opening',
+        'launching',
+        'loading',
+        'iniciando',
+        'carregando'
+    ]);
+
     const hasData = isArrayPayload ? payload.length > 0 : true;
 
     return {
@@ -223,15 +255,17 @@ function parseSessionPayload(payload) {
         isConnected,
         isQrWaiting,
         isNotFound,
+        isInitializing,
         hasData
     };
 }
 
 function scoreState(parsed) {
     if (!parsed || !parsed.hasData) return 0;
-    if (parsed.isConnected) return 5;
-    if (parsed.isQrWaiting && parsed.qrCode) return 4;
-    if (parsed.isQrWaiting) return 3;
+    if (parsed.isConnected) return 6;
+    if (parsed.isQrWaiting && parsed.qrCode) return 5;
+    if (parsed.isQrWaiting) return 4;
+    if (parsed.isInitializing) return 3;
     if (parsed.isNotFound) return 2;
     return 1;
 }
@@ -245,13 +279,19 @@ function mergeSessionPayloads(primaryParsed, secondaryParsed) {
     const qrCode = first?.qrCode || second?.qrCode || '';
     const isConnected = Boolean(first?.isConnected || second?.isConnected);
     const isQrWaiting = Boolean(first?.isQrWaiting || second?.isQrWaiting || qrCode);
-    const isNotFound = Boolean(first?.isNotFound && second?.isNotFound);
+    const isInitializing = !isConnected && !isQrWaiting
+        && Boolean(first?.isInitializing || second?.isInitializing);
+    // not_found exige que AMBAS as fontes concordem; e qualquer sinal de "subindo"
+    // tem precedencia sobre "nao existe" (no boot o status oscila 404 <-> INITIALIZING).
+    const isNotFound = !isInitializing && Boolean(first?.isNotFound && second?.isNotFound);
 
     let sessionStatus = 'disconnected';
     if (isConnected) {
         sessionStatus = 'connected';
     } else if (isQrWaiting) {
         sessionStatus = 'waiting_qr';
+    } else if (isInitializing) {
+        sessionStatus = 'initializing';
     } else if (isNotFound) {
         sessionStatus = 'not_found';
     }
@@ -262,6 +302,7 @@ function mergeSessionPayloads(primaryParsed, secondaryParsed) {
         sessionStatus,
         isConnected,
         isQrWaiting,
+        isInitializing,
         isNotFound,
         qrCode,
         message,
