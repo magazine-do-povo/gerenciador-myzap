@@ -432,6 +432,14 @@ function registerMyZapHandlers(ipcMain) {
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) {
+                    // 404 aqui = o Hub ainda nao tem a rota (nao e erro do operador).
+                    // Mensagem explicita para nao virar "erro misterioso" no painel.
+                    if (res.status === 404) {
+                        return {
+                            status: 'error',
+                            message: 'O Hub ainda nao oferece o cancelamento em massa (rota parametrizacao-myzap/fila/cancelar-pendentes). Peca a criacao no backend para liberar este botao.'
+                        };
+                    }
                     return { status: 'error', message: data?.message || `Falha ao cancelar (HTTP ${res.status}).` };
                 }
                 info('IPC cancelarPendentesBackend executado', {
