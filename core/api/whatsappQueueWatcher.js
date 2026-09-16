@@ -492,6 +492,84 @@ function buildRecentSendEntry(mensagem, envio, status, erro = '') {
   };
 }
 
+// Limpeza de sessoes ORFAS no MyZap local: roda 1x por inicializacao do app.
+// Contexto: instalacoes acumulam sessoes de teste (ex.: a da colecao Insomnia do
+// repo MyZap) que sobem junto com a sessao real. Cada sessao e um Chromium
+// inteiro; as duas competem por memoria/CPU e ZUMBIFICAM JUNTAS (detached frame),
+// derrubando a sessao boa. Removendo a orfa, o MyZap fica com um Chromium so e
+// para de cair sozinho. Portado do gerenciadorMyzap da JZTech (v2.1.1).
+let orfasLimpasNesteBoot = false;
+
+async function limparSessoesOrfas(sessionKeyConfigurada) {
+  // Salvaguarda: sem sessao configurada NAO sabemos o que manter -> nao deleta nada.
+  const manter = String(sessionKeyConfigurada || '').trim();
+  if (!manter) return;
+  const manterLc = manter.toLowerCase();
+
+  try {
+    // /getAllSessions e rota aberta (sem auth). Retorna { ..., data: [devices] }.
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(`${MYZAP_API_URL}getAllSessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: ctrl.signal
+    });
+    clearTimeout(timeout);
+
+    const data = await res.json().catch(() => ({}));
+    const lista = Array.isArray(data?.data) ? data.data
+      : (Array.isArray(data?.result) ? data.result
+        : (Array.isArray(data) ? data : []));
+
+    const orfas = lista.filter((d) => {
+      const s = String(d?.session || '').trim();
+      return s && s.toLowerCase() !== manterLc;
+    });
+
+    if (!orfas.length) return;
+
+    info('[FilaMyZap] Sessoes orfas detectadas no MyZap local — removendo', {
+      metadata: {
+        categoria: 'conexao',
+        manter,
+        orfas: orfas.map((o) => String(o?.session || '').trim())
+      }
+    });
+
+    for (const d of orfas) {
+      const session = String(d?.session || '').trim();
+      const sessionkey = String(d?.sessionkey || '').trim();
+      if (!session) continue;
+      try {
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
+        // deleteSession exige a sessionkey DAQUELA sessao (veio na listagem);
+        // remove banco + cache + pasta instances/<sessao> (nao volta no restart).
+        const r = await fetch(`${MYZAP_API_URL}deleteSession`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', sessionkey },
+          body: JSON.stringify({ session }),
+          signal: c.signal
+        });
+        clearTimeout(t);
+        info('[FilaMyZap] Sessao orfa removida', {
+          metadata: { categoria: 'conexao', session, status: r.status }
+        });
+      } catch (e) {
+        warn('[FilaMyZap] Falha ao remover sessao orfa (tentara no proximo boot)', {
+          metadata: { categoria: 'conexao', session, error: e?.message || e }
+        });
+      }
+    }
+  } catch (err) {
+    warn('[FilaMyZap] Falha ao listar/limpar sessoes orfas', {
+      metadata: { categoria: 'conexao', error: err?.message || err }
+    });
+  }
+}
+
 async function validarDisponibilidadeMyZap(sessionKey, sessionName, sessionToken) {
   try {
     debug('[FilaMyZap] Validando disponibilidade do MyZap (/verifyRealStatus)...', {
@@ -598,6 +676,10 @@ async function atualizarStatusFila(apiBaseUrl, authorization, payload, detalheEr
       ...body,
       erro: detalheErro.erro || '',
       motivo: detalheErro.motivo || 'desconhecido',
+      // permanente=true (numero sem WhatsApp CONFIRMADO): o backend nao deve fazer
+      // retry — sem isso o Hub reenfileira para sempre um numero que nunca vai
+      // receber. Backends que ainda nao conhecem o campo ignoram (retrocompativel).
+      permanente: detalheErro.permanente === true,
       codigo_http: Number.isFinite(detalheErro.codigo_http) ? detalheErro.codigo_http : 0,
       resposta_myzap: truncarResposta(detalheErro.resposta_myzap),
       etapa: detalheErro.etapa || 'envio'
@@ -782,6 +864,9 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
       codigo_http: res.status,
       resposta_myzap: body,
       motivo,
+      // Numero sem WhatsApp e falha DEFINITIVA: reenviar nunca vai funcionar.
+      // Sinaliza ao backend para nao reenfileirar (ver atualizarStatusFila).
+      permanente: motivo === 'numero_invalido',
       etapa: 'envio'
     };
   }
@@ -1010,6 +1095,7 @@ async function processarFilaUmaRodada() {
               idfila: mensagem?.idfila,
               idfilial: filaIdfilial || null,
               motivo: detalheErro.motivo,
+              permanente: detalheErro.permanente === true,
               codigo_http: detalheErro.codigo_http,
               etapa: detalheErro.etapa,
               erro: detalheErro.erro,
@@ -1151,6 +1237,13 @@ async function startWhatsappQueueWatcher() {
       }
     });
     return { status: 'error', message: 'Configuracao do backend/MyZap incompleta.' };
+  }
+
+  // 1x por boot, ANTES de validar: uma sessao orfa competindo por Chromium
+  // zumbifica a sessao boa, e a validacao abaixo herdaria esse estado ruim.
+  if (!orfasLimpasNesteBoot) {
+    orfasLimpasNesteBoot = true;
+    await limparSessoesOrfas(config.sessionKey);
   }
 
   const myzapDisponivel = await validarDisponibilidadeMyZap(
