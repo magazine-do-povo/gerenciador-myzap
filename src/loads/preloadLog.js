@@ -11,7 +11,9 @@ const TEXT_LEVEL_MAP = {
   debug: 'debug'
 };
 
-Zap - API',
+// Nome amigavel de cada canal de log, usado por buildLogLabel().
+const CHANNEL_LABELS = {
+  'log-myzap-api': 'MyZap - API',
   'log-myzap-watcher': 'MyZap - Watchers',
   'log-myzap-backend': 'MyZap - Backend',
   'log-myzap-ipc': 'MyZap - IPC',
@@ -90,3 +92,31 @@ function matchesFilters(line, levelFilters, search, isJson) {
   let levelPass = true;
 
   if (levelFilters.length) {
+    if (isJson) {
+      try {
+        const parsed = JSON.parse(line);
+        levelPass = levelFilters.includes(parsed.level);
+      } catch {
+        levelPass = true;
+      }
+    } else {
+      const marker = line.match(/\[(\w+)\]/);
+      if (marker) {
+        const normalized = TEXT_LEVEL_MAP[marker[1].toLowerCase()] || marker[1].toLowerCase();
+        levelPass = levelFilters.includes(normalized);
+      }
+    }
+  }
+
+  if (!levelPass) return false;
+  if (sanitizedSearch) return line.toLowerCase().includes(sanitizedSearch);
+  return true;
+}
+
+contextBridge.exposeInMainWorld('logViewer', {
+  listLogFiles,
+  readLogTail,
+  copyText(text = '') {
+    clipboard.writeText(String(text));
+  }
+});

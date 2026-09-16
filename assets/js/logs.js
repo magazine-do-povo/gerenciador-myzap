@@ -298,7 +298,10 @@
 
         arquivos
             .sort((a, b) => b.mtime - a.mtime)
-            .forEach(({ name = label || name;
+            .forEach(({ name, label }) => {
+                const option = document.createElement('option');
+                option.value = name;
+                option.textContent = label || name;
                 option.title = name;
                 logFileSelect.appendChild(option);
             });
@@ -350,3 +353,4 @@
     updateResultCount(0);
     updatePollingStateUi();
     populateFiles();
+})();
