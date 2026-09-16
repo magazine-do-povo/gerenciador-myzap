@@ -896,6 +896,9 @@ async function loadConfigs() {
     }
 
     if (document.getElementById('myzap-mensagem-padrao')) document.getElementById('myzap-mensagem-padrao').value = myzap_mensagemPadrao;
+    // Mesmo valor no campo fixo da aba Configuracoes (o da aba MyZap some junto
+    // com o ia-config-box quando a capability de IA esta desligada).
+    if (document.getElementById('config-mensagem-padrao')) document.getElementById('config-mensagem-padrao').value = myzap_mensagemPadrao;
 
     // Carrega segredos do .env para a aba de configurações
     try {
@@ -1681,6 +1684,160 @@ async function salvarMensagemPadrao() {
   } finally {
     btnSave.disabled = false;
     btnSave.textContent = oldText;
+  }
+}
+
+// ── Aba Configuracoes: mensagem padrao + diagnostico ──────────────────────
+// A mensagem padrao tambem vive na aba MyZap, mas la dentro do `ia-config-box`,
+// que fica escondido quando a capability de IA do backend esta desligada. Como a
+// mensagem padrao e recurso do MyZap LOCAL, ela precisa estar sempre alcancavel.
+
+function showDiagFeedback(type, message) {
+  const el = document.getElementById('diag-feedback');
+  if (!el) return;
+  el.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning', 'alert-info');
+  el.classList.add(type === 'success' ? 'alert-success' : type === 'error' ? 'alert-danger' : 'alert-info');
+  el.textContent = message;
+}
+
+function showMsgPadraoStatus(type, message) {
+  const el = document.getElementById('config-msg-padrao-status');
+  if (!el) return;
+  el.classList.remove('d-none', 'alert-success', 'alert-danger', 'alert-warning', 'alert-info');
+  el.classList.add(type === 'success' ? 'alert-success' : type === 'error' ? 'alert-danger' : 'alert-info');
+  el.textContent = message;
+  if (type === 'success') {
+    setTimeout(() => el.classList.add('d-none'), 4000);
+  }
+}
+
+async function salvarMensagemPadraoConfig() {
+  const textarea = document.getElementById('config-mensagem-padrao');
+  const btn = document.getElementById('btn-save-msg-padrao');
+  if (!textarea || !btn) return;
+
+  const mensagemPadrao = textarea.value?.trim() || '';
+
+  // Vazio e permitido: significa DESLIGAR a resposta automatica.
+  if (!mensagemPadrao) {
+    const ok = confirm('Deixar a mensagem padrao VAZIA desativa o envio automatico: o MyZap nao vai responder nada. Confirmar?');
+    if (!ok) return;
+  }
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Salvando...';
+
+  try {
+    const response = await window.api.updateIaConfig(mensagemPadrao);
+    if (!response || response.status === 'error') {
+      throw new Error(response?.message || 'Falha ao salvar a mensagem padrao');
+    }
+
+    // Mantem os dois campos em sincronia (este e o da aba MyZap).
+    const espelho = document.getElementById('myzap-mensagem-padrao');
+    if (espelho) espelho.value = mensagemPadrao;
+
+    if (response?.status === 'skipped') {
+      showMsgPadraoStatus('info', response?.message || 'O MyZap local nao aceitou a configuracao (versao antiga).');
+      return;
+    }
+
+    showMsgPadraoStatus('success', mensagemPadrao
+      ? 'Mensagem padrao atualizada.'
+      : 'Mensagem padrao desativada: o MyZap nao vai responder automaticamente.');
+  } catch (err) {
+    console.error('Erro ao salvar mensagem padrao (config):', err);
+    showMsgPadraoStatus('error', `Erro ao salvar: ${err?.message || err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+// Diagnostico de 1 clique: diz em que pe esta o servico e a sessao, e o que fazer.
+async function testarConexaoAgora() {
+  const btn = document.getElementById('btn-test-connection');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Testando...';
+  showDiagFeedback('info', 'Consultando o servico local e a sessao...');
+
+  try {
+    const r = await window.api.testConnection();
+    const servicoOk = r?.servico === 'no_ar';
+    const tipo = servicoOk && r?.sessao === 'conectada' ? 'success'
+      : servicoOk ? 'info'
+        : 'error';
+    const rotulo = {
+      conectada: 'Conectado',
+      aguardando_qr: 'Aguardando leitura do QR',
+      iniciando: 'Sessao iniciando',
+      nao_criada: 'Sessao nao criada',
+      sem_resposta: 'Sem resposta da sessao',
+      desconectada: 'Desconectada',
+      desconhecida: 'Estado desconhecido'
+    }[r?.sessao] || 'Estado desconhecido';
+
+    showDiagFeedback(tipo, `Servico: ${servicoOk ? 'no ar' : 'fora do ar'} · Sessao: ${rotulo}. ${r?.detalhe || ''}`.trim());
+  } catch (err) {
+    console.error('Erro ao testar conexao:', err);
+    showDiagFeedback('error', `Erro ao testar conexao: ${err?.message || err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+// Envia para o PROPRIO numero da sessao — e o que o sendTestMessage desta base
+// faz (resolve o numero sozinho), sem pedir numero de ninguem.
+async function enviarMensagemTesteConfig() {
+  const btn = document.getElementById('btn-test-send');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Enviando...';
+  showDiagFeedback('info', 'Enviando mensagem de teste para o proprio numero...');
+
+  try {
+    const response = await window.api.sendTestMessage();
+    if (!response || response.status !== 'success') {
+      throw new Error(response?.message || 'Falha ao enviar mensagem de teste.');
+    }
+    showDiagFeedback('success', `Teste enviado para ${response.number} em ${response.sentAtLabel}.`);
+  } catch (err) {
+    console.error('Erro ao enviar teste (config):', err);
+    showDiagFeedback('error', `Erro ao enviar teste: ${err?.message || err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function repararServicoAgora() {
+  const btn = document.getElementById('btn-repair-service');
+  if (!btn) return;
+
+  btn.disabled = true;
+  const oldText = btn.textContent;
+  btn.textContent = 'Reparando...';
+  showDiagFeedback('info', 'Reparando o MyZap (a sessao do WhatsApp e preservada)...');
+
+  try {
+    const r = await window.api.repairService();
+    if (r?.status === 'error') {
+      throw new Error(r?.message || 'Falha ao reparar o MyZap.');
+    }
+    showDiagFeedback('success', r?.message || 'Reparo concluido. Confira o status na aba MyZap.');
+  } catch (err) {
+    console.error('Erro ao reparar servico:', err);
+    showDiagFeedback('error', `Erro ao reparar: ${err?.message || err}`);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
   }
 }
 
