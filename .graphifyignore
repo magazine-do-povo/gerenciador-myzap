@@ -1,0 +1,29 @@
+# .graphifyignore — o que NÃO entra no knowledge graph.
+# Copiado pela skill graphify-always. Ajuste por projeto se precisar.
+#
+# IMPORTANTE: o graphify pula node_modules/.git/__pycache__ por PADRÃO,
+# mas NÃO conhece 'vendor/' (PHP/Composer) — sem esta linha ele indexa
+# lixo de terceiros, incha o grafo e estoura a visualização (limite 5000 nodes).
+
+# Dependências de terceiros (nunca são "nossa arquitetura")
+vendor/
+api/vendor/
+
+# O próprio output do graphify
+graphify-out/
+
+# Build / artefatos (JS/TS)
+dist/
+build/
+.vite/
+coverage/
+.next/
+.expo/
+web-build/
+# Build / artefatos (mobile)
+android/
+ios/
+
+# Migrations = scripts sequenciais de schema, não arquitetura navegável
+# (acha-se migration por número/nome, não pelo grafo). Comente se quiser incluí-las.
+migrations/

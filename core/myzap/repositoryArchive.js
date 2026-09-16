@@ -5,7 +5,35 @@ const https = require('https');
 const extractZip = require('extract-zip');
 const { error: logError, info } = require('./myzapLogger').forArea('install');
 
-const MYZAP_ARCHIVE_URL = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/refs/heads/main';
+const MYZAP_ARCHIVE_BASE = 'https://codeload.github.com/JZ-TECH-SYS/myzap/zip/';
+const MYZAP_ARCHIVE_URL = `${MYZAP_ARCHIVE_BASE}refs/heads/main`;
+// Retry do download: rede instavel nao pode ser falha permanente.
+const DOWNLOAD_RETRY_DELAYS_MS = [2000, 8000, 30000];
+
+/** ZIP pinado num commit SHA (elimina corrida com push durante o download). */
+function buildArchiveUrl(sha) {
+  const ref = String(sha || '').trim();
+  return ref ? `${MYZAP_ARCHIVE_BASE}${ref}` : MYZAP_ARCHIVE_URL;
+}
+
+async function baixarArquivoComRetry(url, destinationPath) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= DOWNLOAD_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await baixarArquivo(url, destinationPath);
+      return;
+    } catch (err) {
+      lastError = err;
+      if (attempt === DOWNLOAD_RETRY_DELAYS_MS.length) break;
+      const delayMs = DOWNLOAD_RETRY_DELAYS_MS[attempt];
+      info('Download do MyZap falhou, tentando novamente', {
+        metadata: { area: 'repositoryArchive', tentativa: attempt + 1, proximaEmMs: delayMs, error: err?.message || String(err) },
+      });
+      await new Promise((resolve) => { setTimeout(resolve, delayMs); });
+    }
+  }
+  throw lastError;
+}
 const MAX_REDIRECTS = 5;
 
 function writeDebugLog(debugLog, message, metadata = {}) {
@@ -174,7 +202,8 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
       archiveUrl: MYZAP_ARCHIVE_URL,
     });
 
-    await baixarArquivo(MYZAP_ARCHIVE_URL, archivePath);
+    const archiveUrl = buildArchiveUrl(options.sha);
+    await baixarArquivoComRetry(archiveUrl, archivePath);
     writeDebugLog(debugLog, 'Download do pacote do MyZap concluido', {
       dirPath,
       archivePath,
@@ -249,6 +278,8 @@ async function downloadRepositoryArchive(dirPath, options = {}) {
 }
 
 module.exports = {
+  buildArchiveUrl,
+  baixarArquivoComRetry,
   MYZAP_ARCHIVE_URL,
   downloadRepositoryArchive,
 };

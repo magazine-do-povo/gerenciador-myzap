@@ -21,6 +21,7 @@ const VALID_STATES = [
     'installing_dependencies',
     'starting_service',
     'running',
+    'recovering',
     'error',
     'resetting'
 ];
@@ -30,7 +31,7 @@ const VALID_STATES = [
  * Chave = estado atual, valor = array de estados destino validos.
  */
 const TRANSITIONS = {
-    idle: ['checking_config', 'resetting'],
+    idle: ['checking_config', 'recovering', 'resetting'],
     checking_config: [
         'cloning_repo',
         'installing_git',
@@ -45,8 +46,9 @@ const TRANSITIONS = {
     cloning_repo: ['installing_dependencies', 'error', 'resetting'],
     installing_dependencies: ['starting_service', 'error', 'resetting'],
     starting_service: ['running', 'error', 'resetting'],
-    running: ['error', 'resetting', 'idle', 'checking_config'],
-    error: ['idle', 'resetting', 'checking_config'],
+    running: ['error', 'resetting', 'idle', 'checking_config', 'recovering'],
+    error: ['idle', 'resetting', 'checking_config', 'recovering'],
+    recovering: ['starting_service', 'cloning_repo', 'checking_config', 'running', 'error', 'resetting'],
     resetting: ['idle', 'error']
 };
 
@@ -60,6 +62,7 @@ const STATE_LABELS = {
     installing_dependencies: 'Instalando dependencias...',
     starting_service: 'Iniciando servico...',
     running: 'Em execucao',
+    recovering: 'Recuperando servico...',
     error: 'Erro',
     resetting: 'Resetando ambiente...'
 };
@@ -74,6 +77,7 @@ const STATE_PROGRESS = {
     installing_dependencies: 60,
     starting_service: 80,
     running: 100,
+    recovering: 70,
     error: 0,
     resetting: 50
 };
@@ -258,6 +262,7 @@ function isSetupInProgress() {
         'cloning_repo',
         'installing_dependencies',
         'starting_service',
+        'recovering',
         'resetting'
     ].includes(currentState);
 }

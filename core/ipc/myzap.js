@@ -21,7 +21,10 @@ const {
 } = require('../myzap/autoConfig');
 const { resetMyZapEnvironment } = require('../myzap/resetEnvironment');
 const { getStateSnapshot } = require('../myzap/stateMachine');
-const { getPrivilegeStatus, killProcessesOnPort } = require('../myzap/processUtils');
+const { getPrivilegeStatus, killProcessesOnPort, isLocalHttpServiceReachable } = require('../myzap/processUtils');
+const { connectWithRecovery } = require('../myzap/api/connectSession');
+const { parseSessionPayload } = require('../myzap/api/sessionSnapshotParser');
+const { getBackendApiConfig } = require('../myzap/capabilities');
 const {
     getUltimosEnviosMyZap,
     getUltimosPendentesMyZap,
@@ -310,6 +313,148 @@ function registerMyZapHandlers(ipcMain) {
         }
     });
 
+    // Conectar SEM nunca deletar a sessao: o fluxo antigo interpretava o
+    // 404/INITIALIZING da subida como "sessao zumbi" e apagava a sessao no exato
+    // momento em que o QR ia aparecer. Ver core/myzap/api/connectSession.js.
+    ipcMain.handle('myzap:connectSession', async () => {
+        try {
+            return await connectWithRecovery();
+        } catch (error) {
+            warn('Falha ao conectar sessao com recuperacao via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                sessionStatus: 'unknown',
+                qrCode: null,
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    // UNICO caminho que derruba a sessao — acionado pelo usuario ("Forcar reconexao").
+    ipcMain.handle('myzap:forceReconnect', async () => {
+        try {
+            info('IPC myzap:forceReconnect recebido', {
+                metadata: { area: 'ipcMyzap' }
+            });
+            return await connectWithRecovery({ forceCloseFirst: true });
+        } catch (error) {
+            warn('Falha ao forcar reconexao via IPC', {
+                metadata: { error }
+            });
+            return {
+                status: 'error',
+                sessionStatus: 'unknown',
+                qrCode: null,
+                message: error.message || String(error)
+            };
+        }
+    });
+
+    // Diagnostico de 1 clique: separa "servico fora do ar" de "sessao nao criada"
+    // / "aguardando QR" / "desconectada", cada um com a acao correspondente.
+    ipcMain.handle('myzap:testConnection', async () => {
+        const resultado = {
+            servico: 'fora',
+            sessao: 'desconhecida',
+            sessionKey: String(envStore.get('myzap_sessionKey') || '').trim(),
+            detalhe: ''
+        };
+
+        try {
+            const vivo = await isLocalHttpServiceReachable({ timeoutMs: 4000 });
+            if (!vivo) {
+                resultado.detalhe = 'O servico local nao respondeu na porta 5555. Use "Reparar MyZap agora" (bandeja ou aba Configuracoes).';
+                return resultado;
+            }
+            resultado.servico = 'no_ar';
+
+            const verify = await verifyRealStatus();
+            const parsed = parseSessionPayload(verify);
+
+            if (parsed.isConnected) {
+                resultado.sessao = 'conectada';
+                resultado.detalhe = 'WhatsApp conectado e pronto para enviar.';
+            } else if (parsed.isQrWaiting) {
+                resultado.sessao = 'aguardando_qr';
+                resultado.detalhe = 'Sessao criada aguardando leitura do QR Code (aba MyZap).';
+            } else if (parsed.isInitializing) {
+                resultado.sessao = 'iniciando';
+                resultado.detalhe = 'A sessao esta subindo (o navegador leva alguns segundos). Aguarde o QR Code aparecer.';
+            } else if (parsed.isNotFound) {
+                resultado.sessao = 'nao_criada';
+                resultado.detalhe = `A sessao "${resultado.sessionKey}" ainda nao existe no MyZap. Clique em "Iniciar instancia" para criar e gerar o QR.`;
+            } else if (!parsed.hasData) {
+                resultado.sessao = 'sem_resposta';
+                resultado.detalhe = 'O servico respondeu, mas a consulta da sessao falhou. Tente novamente em instantes.';
+            } else {
+                resultado.sessao = 'desconectada';
+                resultado.detalhe = parsed.message || 'Sessao existe mas esta desconectada. Clique em "Iniciar instancia" para reconectar.';
+            }
+
+            return resultado;
+        } catch (error) {
+            warn('Falha no teste de conexao via IPC', { metadata: { error } });
+            resultado.detalhe = `Erro inesperado no teste: ${error.message || String(error)}`;
+            return resultado;
+        }
+    });
+
+    // Cancela em massa as mensagens ainda pendentes no backend (Hub).
+    // ATENCAO: depende da rota `parametrizacao-myzap/fila/cancelar-pendentes` existir
+    // no Hub do Magazine; enquanto nao existir, devolve erro claro em vez de quebrar.
+    ipcMain.handle('myzap:cancelarPendentesBackend', async () => {
+        try {
+            const { backendApiUrl, backendApiToken } = getBackendApiConfig(envStore);
+            // No Magazine o escopo e a FILIAL (a JZTech usa idempresa).
+            const idfilial = parseInt(
+                String(envStore.get('idfilial') || envStore.get('idempresa') || '').trim(),
+                10
+            );
+
+            if (!backendApiUrl || !backendApiToken || !idfilial) {
+                return { status: 'error', message: 'Configuracao do backend incompleta (URL/token/filial).' };
+            }
+
+            const base = backendApiUrl.endsWith('/') ? backendApiUrl : `${backendApiUrl}/`;
+            const ctrl = new AbortController();
+            const timer = setTimeout(() => ctrl.abort(), 15000);
+            try {
+                const res = await fetch(`${base}parametrizacao-myzap/fila/cancelar-pendentes`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        Authorization: `Bearer ${backendApiToken}`
+                    },
+                    body: JSON.stringify({ idfilial }),
+                    signal: ctrl.signal
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    // 404 aqui = o Hub ainda nao tem a rota (nao e erro do operador).
+                    // Mensagem explicita para nao virar "erro misterioso" no painel.
+                    if (res.status === 404) {
+                        return {
+                            status: 'error',
+                            message: 'O Hub ainda nao oferece o cancelamento em massa (rota parametrizacao-myzap/fila/cancelar-pendentes). Peca a criacao no backend para liberar este botao.'
+                        };
+                    }
+                    return { status: 'error', message: data?.message || `Falha ao cancelar (HTTP ${res.status}).` };
+                }
+                info('IPC cancelarPendentesBackend executado', {
+                    metadata: { area: 'ipcMyzap', idfilial }
+                });
+                return { status: 'success', message: data?.message || 'Mensagens pendentes canceladas no backend.' };
+            } finally {
+                clearTimeout(timer);
+            }
+        } catch (error) {
+            warn('Falha ao cancelar pendentes no backend via IPC', { metadata: { error } });
+            return { status: 'error', message: error.message || String(error) };
+        }
+    });
+
     ipcMain.handle('myzap:startSession', async (event) => {
         try {
             const result = await startSession();
@@ -524,7 +669,6 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const { TOKEN = '', OPENAI_API_KEY = '', EMAIL_TOKEN = '' } = secrets || {};
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const templatePath = path.join(__dirname, '..', 'myzap', 'configs', '.env');
             const localEnvPath = myzapDir ? path.join(myzapDir, '.env') : '';
             const targets = [];
             if (localEnvPath && fs.existsSync(localEnvPath)) {
@@ -533,7 +677,7 @@ function registerMyZapHandlers(ipcMain) {
 
             // Sempre atualiza myzap_envContent no store para que futuras instalacoes carreguem os segredos
             const storedEnv = String(envStore.get('myzap_envContent') || '').trim();
-            const templateEnv = fs.existsSync(templatePath) ? fs.readFileSync(templatePath, 'utf8') : '';
+            const templateEnv = '';
             const baseEnv = storedEnv || templateEnv;
             const nextEnvContent = buildEnvContent(baseEnv, {
                 TOKEN,
@@ -583,15 +727,12 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
             const localEnv = myzapDir ? path.join(myzapDir, '.env') : '';
-            const templateEnv = path.join(__dirname, '..', 'myzap', 'configs', '.env');
-            const storeEnv = String(envStore.get('myzap_envContent') || '');
+                        const storeEnv = String(envStore.get('myzap_envContent') || '');
             let envContent = '';
             if (localEnv && fs.existsSync(localEnv)) {
                 envContent = fs.readFileSync(localEnv, 'utf8');
             } else if (storeEnv) {
                 envContent = storeEnv;
-            } else if (fs.existsSync(templateEnv)) {
-                envContent = fs.readFileSync(templateEnv, 'utf8');
             }
             return parseEnvSecrets(envContent);
         } catch (error) {

@@ -1,6 +1,6 @@
 const { iniciarMyZap } = require('./iniciarMyZap');
 const { info, warn, error } = require('./myzapLogger').forArea('install');
-const { killProcessesOnPort, isPortInUse } = require('./processUtils');
+const { killProcessesOnPort, isPortInUse, waitForPortFree } = require('./processUtils');
 const { syncMyZapConfigs } = require('./syncConfigs');
 const { transition } = require('./stateMachine');
 
@@ -34,7 +34,7 @@ async function atualizarEnv(dirPath, envContent, options = {}) {
             info('Processos finalizados na porta 5555 para reinicio do MyZap', {
                 metadata: { killed: killResult.killed }
             });
-            await new Promise((resolve) => setTimeout(resolve, 1000));
+            await waitForPortFree(5555, { timeoutMs: 15000 });
         }
 
         if (killResult.failed.length > 0) {

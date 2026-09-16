@@ -4,7 +4,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger').forArea('install');
-const { killProcessesOnPort, commandExists, isPortInUse } = require('./processUtils');
+const { killProcessesOnPort, commandExists, isPortInUse, waitForPortFree } = require('./processUtils');
 const { getDefaultMyZapDirectory } = require('./autoConfig');
 const { killMyZapProcess } = require('./iniciarMyZap');
 const { transition, forceTransition } = require('./stateMachine');
@@ -404,7 +404,7 @@ async function resetMyZapEnvironment(options = {}) {
 
         // 2b. Aguardar liberacao de file locks no Windows antes de remover diretorios
         if (process.platform === 'win32') {
-            await new Promise((resolve) => setTimeout(resolve, 1500));
+            await waitForPortFree(5555, { timeoutMs: 10000 });
         }
 
         // 3. Remover diretorios

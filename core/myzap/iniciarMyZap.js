@@ -10,6 +10,7 @@ const {
   getGitCommand,
   findSystemNodePath,
   buildCleanEnvForChild,
+  waitForPortFree,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
 const { probeMyZapIdentity } = require('./api/myzapHealthcheck');
@@ -640,4 +641,45 @@ async function iniciarMyZap(dirPath, options = {}) {
   }
 }
 
-module.exports = { iniciarMyZap, killMyZapProcess, onMyZapChildExit };
+
+/**
+ * Instalacao apta a rodar? (index.js + dependencias instaladas)
+ */
+function isMyZapInstallComplete(dirPath) {
+  try {
+    return Boolean(dirPath)
+      && fs.existsSync(path.join(dirPath, 'index.js'))
+      && fs.existsSync(path.join(dirPath, 'node_modules', 'express'));
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Parada completa: mata a arvore rastreada, varre a porta 5555 e espera a
+ * porta ficar REALMENTE livre antes de devolver o controle.
+ */
+async function stopMyZapAndFreePort(options = {}) {
+  const porta = Number.isFinite(options.port) ? options.port : 5555;
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000;
+
+  killMyZapProcess();
+
+  const portKill = killProcessesOnPort(porta);
+  if (portKill.killed.length > 0 || portKill.failed.length > 0) {
+    info('stopMyZapAndFreePort: varredura da porta concluida', {
+      metadata: { area: 'iniciarMyZap', porta, ...portKill },
+    });
+  }
+
+  const portFree = await waitForPortFree(porta, { timeoutMs });
+  if (!portFree) {
+    warn('stopMyZapAndFreePort: porta continua em uso apos kill', {
+      metadata: { area: 'iniciarMyZap', porta, timeoutMs },
+    });
+  }
+
+  return { portFree };
+}
+
+module.exports = { iniciarMyZap, killMyZapProcess, onMyZapChildExit, stopMyZapAndFreePort, isMyZapInstallComplete };

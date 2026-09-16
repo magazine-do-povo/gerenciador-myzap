@@ -852,8 +852,62 @@ async function getSystemGitCommand() {
   return null;
 }
 
+/**
+ * Mata um processo E toda a sua arvore de filhos.
+ * No Windows, kill('SIGTERM') mata so o pai e deixa o `node` filho vivo
+ * segurando a porta — taskkill /T derruba a arvore inteira; no Unix,
+ * pkill -P pega os filhos diretos antes do kill no pai.
+ */
+function killProcessTree(pid) {
+  if (!pid || pid <= 0 || pid === process.pid) {
+    return false;
+  }
+
+  try {
+    if (os.platform() === 'win32') {
+      execSync(`taskkill /T /F /PID ${pid}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+      return true;
+    }
+
+    try {
+      execSync(`pkill -9 -P ${pid}`, { stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (_e) { /* sem filhos ou pkill ausente */ }
+
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch (_e) {
+      return false;
+    }
+    return true;
+  } catch (_e) {
+    return false;
+  }
+}
+
+/**
+ * Aguarda a porta ficar realmente livre (poll), no lugar de sleeps cegos.
+ */
+async function waitForPortFree(port, options = {}) {
+  const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 15000;
+  const intervalMs = Number.isFinite(options.intervalMs) ? options.intervalMs : 400;
+  const inicio = Date.now();
+
+  for (;;) {
+    const inUse = await isPortInUse(port);
+    if (!inUse) {
+      return true;
+    }
+    if (Date.now() - inicio >= timeoutMs) {
+      return false;
+    }
+    await new Promise((resolve) => { setTimeout(resolve, intervalMs); });
+  }
+}
+
 module.exports = {
   isPortInUse,
+  killProcessTree,
+  waitForPortFree,
   isLocalHttpServiceReachable,
   killProcessesOnPort,
   getPrivilegeStatus,

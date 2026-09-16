@@ -10,7 +10,8 @@ const {
 const { ensureBackendSession } = require('../myzap/backendAuth');
 
 const store = new Store();
-const MYZAP_API_URL = 'http://localhost:5555/';
+// 127.0.0.1 (e nao localhost, que pode resolver ::1 no Windows e dar timeout)
+const MYZAP_API_URL = 'http://127.0.0.1:5555/';
 const LOOP_INTERVAL_MS = 3000;
 const FETCH_TIMEOUT_MS = 15000;
 const PROCESSANDO_TIMEOUT_MS = 120000;
@@ -20,11 +21,37 @@ const MAX_ULTIMOS_ENVIOS = 50;
 const MAX_RESPOSTA_MYZAP_CHARS = 2000;
 
 // Reconexao: backoff exponencial (com teto) enquanto o MyZap estiver indisponivel.
-// Nao confundir com humanizacao/ritmo de envio: o ritmo entre mensagens e
-// controlado server-side pelo Hub (liberar_apos); este backoff so espaca as
+// Nao confundir com humanizacao/ritmo de envio (abaixo): este backoff so espaca as
 // TENTATIVAS de reconexao quando o MyZap nao responde.
 const BACKOFF_BASE_MS = LOOP_INTERVAL_MS;
 const BACKOFF_MAX_MS = 30000;
+
+// --- Ritmo humano de envio (portado da JZTech) -----------------------------
+// O Hub continua sendo a fonte da verdade: ele decide QUANDO libera cada mensagem.
+// Isto aqui e uma segunda camada, LOCAL, que espaca o envio dentro do lote — o
+// que protege o numero de rajadas sub-segundo quando o Hub entrega varias de uma
+// vez. Fica INERTE enquanto o backend nao mandar o bloco "ritmo" (ver ritmoConfig).
+const { getRitmo, refreshRitmoIfStale } = require('./ritmoConfig');
+
+// Humanizacao "digitando": antes de cada sendText o MyZap (WPPConnect) simula
+// digitacao por `time_typing` ms (proporcional ao tamanho do texto, com piso/teto).
+// Engines que nao suportam ignoram o campo (no-op).
+const TYPING_MIN_MS = 1500;
+const TYPING_MAX_MS = 6000;
+const TYPING_CHARS_POR_SEG = 12;
+// Teto absoluto do atraso entre mensagens (defesa contra config patologica): evita
+// que um unico sleep gigante estoure a trava de re-entrada do ciclo.
+const DELAY_ENTRE_MSG_TETO_MS = 120000;
+// Piso do atraso entre mensagens — vale APENAS quando ha ritmo configurado. Com
+// ritmo zerado (default desta base) o delay e 0 e o comportamento historico do
+// Magazine e preservado; sem essa ressalva o porte adicionaria 1s por mensagem
+// que ninguem pediu.
+const DELAY_ENTRE_MSG_PISO_MS = 1000;
+// Teto de mensagens reivindicadas por ciclo, dimensionado pelo delay para o lote
+// SEMPRE drenar dentro de um ciclo (nenhuma mensagem presa em 'processando').
+const LIMITE_CICLO_MAX = 10;
+// Contador de envios do dia (teto diario): { dia: 'YYYY-MM-DD', total: N }.
+const STORE_ENVIOS_DIA_KEY = 'myzap_enviosDoDia';
 
 // Proxima rodada efetiva so volta a acontecer apos esse timestamp (backoff).
 let backoffAteEm = 0;
@@ -40,6 +67,43 @@ let ultimosPendentes = [];
 let ultimosEnvios = [];
 let consecutiveSkips = 0;
 const MAX_CONSECUTIVE_SKIPS = 10;
+
+// 'aguardando_myzap' | 'aguardando_credenciais' | null — pausa RECUPERAVEL
+// (substitui o antigo auto-stop definitivo: a fila nunca mais morre sozinha)
+let motivoPausa = null;
+let notifyCallback = null;
+let ultimoToastPausaAt = 0;
+const PAUSA_TOAST_COOLDOWN_MS = 10 * 60 * 1000;
+
+function setQueueNotifier(fn) {
+  notifyCallback = (typeof fn === 'function') ? fn : null;
+}
+
+function notificarFila(mensagem, { comCooldown = false } = {}) {
+  if (!notifyCallback) return;
+  if (comCooldown) {
+    const agora = Date.now();
+    if (agora - ultimoToastPausaAt < PAUSA_TOAST_COOLDOWN_MS) return;
+    ultimoToastPausaAt = agora;
+  }
+  try { notifyCallback(mensagem); } catch (_e) { /* melhor esforco */ }
+}
+
+function entrarEmPausa(motivo, mensagem) {
+  if (motivoPausa === motivo) return;
+  motivoPausa = motivo;
+  warn(`[FilaMyZap] Fila pausada (${motivo}) — retoma sozinha quando resolver`, {
+    metadata: { categoria: 'conexao', motivo, consecutiveSkips }
+  });
+  notificarFila(mensagem, { comCooldown: true });
+}
+
+function sairDaPausa() {
+  if (!motivoPausa) return;
+  motivoPausa = null;
+  info('[FilaMyZap] Fila retomada automaticamente', { metadata: { categoria: 'conexao' } });
+  notificarFila('Fila de mensagens retomada: MyZap respondendo novamente.');
+}
 const SKIP_LOG_EVERY = 5;
 
 /**
@@ -254,6 +318,13 @@ function normalizeSendTextData(data) {
   if (!normalized.text && normalized.message) {
     normalized.text = normalized.message;
   }
+  // "Digitando" humano: pede ao MyZap (WPPConnect) que simule digitacao por
+  // `time_typing` ms ANTES de enviar. Engines que nao suportam ignoram o campo.
+  // So entra quando ha ritmo configurado — ver randomDelayMs/ritmoConfig.
+  if (normalized.time_typing === undefined && temRitmoConfigurado()) {
+    const typingMs = typingMsParaTexto(normalized.text);
+    if (typingMs > 0) normalized.time_typing = typingMs;
+  }
   return normalized;
 }
 
@@ -454,6 +525,175 @@ function buildRecentSendEntry(mensagem, envio, status, erro = '') {
   };
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function hojeISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function getEnviosHoje() {
+  const raw = store.get(STORE_ENVIOS_DIA_KEY);
+  if (!raw || typeof raw !== 'object' || !raw.dia) return 0;
+  const total = Math.max(0, Number(raw.total) || 0);
+  const hoje = hojeISO();
+  // Mesmo dia OU relogio do PC andou para TRAS (dia armazenado no "futuro"): mantem a
+  // contagem — assim um ajuste de relogio nao zera o teto e libera uma rajada. So zera
+  // de fato quando o dia avanca (hoje > dia armazenado).
+  if (raw.dia >= hoje) return total;
+  return 0;
+}
+
+function registrarEnvioHoje() {
+  const total = getEnviosHoje() + 1;
+  const raw = store.get(STORE_ENVIOS_DIA_KEY);
+  const diaArmazenado = raw && typeof raw === 'object' && raw.dia ? String(raw.dia) : '';
+  const hoje = hojeISO();
+  // Rotulo do dia nunca anda para tras (protege contra relogio retrocedido).
+  const dia = diaArmazenado > hoje ? diaArmazenado : hoje;
+  store.set(STORE_ENVIOS_DIA_KEY, { dia, total });
+  return total;
+}
+
+// Atraso aleatorio (ms) ENTRE mensagens, vindo do ritmo configurado no backend.
+// SEM ritmo configurado (max = 0) devolve 0: preserva o comportamento historico
+// desta base, em que o espacamento e decidido pelo Hub.
+function randomDelayMs() {
+  const r = getRitmo();
+  if (!r.intervaloMsgMaxSeg && !r.intervaloMsgMinSeg) return 0;
+
+  let min = Math.max(DELAY_ENTRE_MSG_PISO_MS, r.intervaloMsgMinSeg * 1000);
+  let max = Math.max(min, r.intervaloMsgMaxSeg * 1000);
+  min = Math.min(min, DELAY_ENTRE_MSG_TETO_MS);
+  max = Math.min(max, DELAY_ENTRE_MSG_TETO_MS);
+  return Math.floor(min + Math.random() * (max - min));
+}
+
+// true quando o backend ja mandou um ritmo de fato (qualquer espacamento > 0).
+// Enquanto for false o porte fica inerte e o comportamento historico e preservado.
+function temRitmoConfigurado() {
+  const r = getRitmo();
+  return Boolean(r.intervaloMsgMinSeg || r.intervaloMsgMaxSeg);
+}
+
+// Atraso de "digitando" (ms) para um texto: proporcional ao tamanho, com piso/teto.
+function typingMsParaTexto(texto) {
+  const len = String(texto || '').length;
+  if (len === 0) return 0;
+  const estimado = Math.round((len / TYPING_CHARS_POR_SEG) * 1000);
+  return Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, estimado));
+}
+
+// Janela de horario permitido (hora LOCAL do PC do operador). Sem janela => 24h.
+// Suporta janela cruzando a meia-noite (ex.: 20:00 -> 06:00).
+function dentroDaJanela(r) {
+  const inicio = r.horarioInicio;
+  const fim = r.horarioFim;
+  if (!inicio || !fim || inicio === fim) return true;
+  const agora = new Date();
+  const hhmm = `${String(agora.getHours()).padStart(2, '0')}:${String(agora.getMinutes()).padStart(2, '0')}`;
+  if (inicio < fim) return hhmm >= inicio && hhmm <= fim;
+  return hhmm >= inicio || hhmm <= fim; // janela cruza a meia-noite
+}
+
+// true se ainda ha cota no teto diario (0 = ilimitado).
+function dentroDoTetoDiario(r) {
+  return !r.tetoDiario || getEnviosHoje() < r.tetoDiario;
+}
+
+// Quantas mensagens reivindicar por ciclo: no PIOR caso (delay maximo + digitando +
+// timeout de fetch por msg) o lote ainda precisa drenar dentro do orcamento do ciclo,
+// com margem. Evita reivindicar 10 e so conseguir enviar 3, deixando 7 presas em
+// 'processando'. Sem ritmo configurado o custo por msg cai e o limite volta ao teto.
+function calcularLimiteCiclo() {
+  const r = getRitmo();
+  const maxDelayMs = Math.min(DELAY_ENTRE_MSG_TETO_MS, Math.max(0, r.intervaloMsgMaxSeg * 1000));
+  const custoPorMsg = maxDelayMs + TYPING_MAX_MS + FETCH_TIMEOUT_MS;
+  const orcamento = (PROCESSANDO_TIMEOUT_MS - FETCH_TIMEOUT_MS) * 0.8;
+  const n = Math.floor(orcamento / Math.max(1, custoPorMsg));
+  return Math.min(LIMITE_CICLO_MAX, Math.max(1, n));
+}
+
+// Limpeza de sessoes ORFAS no MyZap local: roda 1x por inicializacao do app.
+// Contexto: instalacoes acumulam sessoes de teste (ex.: a da colecao Insomnia do
+// repo MyZap) que sobem junto com a sessao real. Cada sessao e um Chromium
+// inteiro; as duas competem por memoria/CPU e ZUMBIFICAM JUNTAS (detached frame),
+// derrubando a sessao boa. Removendo a orfa, o MyZap fica com um Chromium so e
+// para de cair sozinho. Portado do gerenciadorMyzap da JZTech (v2.1.1).
+let orfasLimpasNesteBoot = false;
+
+async function limparSessoesOrfas(sessionKeyConfigurada) {
+  // Salvaguarda: sem sessao configurada NAO sabemos o que manter -> nao deleta nada.
+  const manter = String(sessionKeyConfigurada || '').trim();
+  if (!manter) return;
+  const manterLc = manter.toLowerCase();
+
+  try {
+    // /getAllSessions e rota aberta (sem auth). Retorna { ..., data: [devices] }.
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    const res = await fetch(`${MYZAP_API_URL}getAllSessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: ctrl.signal
+    });
+    clearTimeout(timeout);
+
+    const data = await res.json().catch(() => ({}));
+    const lista = Array.isArray(data?.data) ? data.data
+      : (Array.isArray(data?.result) ? data.result
+        : (Array.isArray(data) ? data : []));
+
+    const orfas = lista.filter((d) => {
+      const s = String(d?.session || '').trim();
+      return s && s.toLowerCase() !== manterLc;
+    });
+
+    if (!orfas.length) return;
+
+    info('[FilaMyZap] Sessoes orfas detectadas no MyZap local — removendo', {
+      metadata: {
+        categoria: 'conexao',
+        manter,
+        orfas: orfas.map((o) => String(o?.session || '').trim())
+      }
+    });
+
+    for (const d of orfas) {
+      const session = String(d?.session || '').trim();
+      const sessionkey = String(d?.sessionkey || '').trim();
+      if (!session) continue;
+      try {
+        const c = new AbortController();
+        const t = setTimeout(() => c.abort(), FETCH_TIMEOUT_MS);
+        // deleteSession exige a sessionkey DAQUELA sessao (veio na listagem);
+        // remove banco + cache + pasta instances/<sessao> (nao volta no restart).
+        const r = await fetch(`${MYZAP_API_URL}deleteSession`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', sessionkey },
+          body: JSON.stringify({ session }),
+          signal: c.signal
+        });
+        clearTimeout(t);
+        info('[FilaMyZap] Sessao orfa removida', {
+          metadata: { categoria: 'conexao', session, status: r.status }
+        });
+      } catch (e) {
+        warn('[FilaMyZap] Falha ao remover sessao orfa (tentara no proximo boot)', {
+          metadata: { categoria: 'conexao', session, error: e?.message || e }
+        });
+      }
+    }
+  } catch (err) {
+    warn('[FilaMyZap] Falha ao listar/limpar sessoes orfas', {
+      metadata: { categoria: 'conexao', error: err?.message || err }
+    });
+  }
+}
+
 async function validarDisponibilidadeMyZap(sessionKey, sessionName, sessionToken) {
   try {
     debug('[FilaMyZap] Validando disponibilidade do MyZap (/verifyRealStatus)...', {
@@ -560,6 +800,10 @@ async function atualizarStatusFila(apiBaseUrl, authorization, payload, detalheEr
       ...body,
       erro: detalheErro.erro || '',
       motivo: detalheErro.motivo || 'desconhecido',
+      // permanente=true (numero sem WhatsApp CONFIRMADO): o backend nao deve fazer
+      // retry — sem isso o Hub reenfileira para sempre um numero que nunca vai
+      // receber. Backends que ainda nao conhecem o campo ignoram (retrocompativel).
+      permanente: detalheErro.permanente === true,
       codigo_http: Number.isFinite(detalheErro.codigo_http) ? detalheErro.codigo_http : 0,
       resposta_myzap: truncarResposta(detalheErro.resposta_myzap),
       etapa: detalheErro.etapa || 'envio'
@@ -744,6 +988,9 @@ async function enviarParaMyZap(mensagem, fallbackSessionKey, fallbackSessionName
       codigo_http: res.status,
       resposta_myzap: body,
       motivo,
+      // Numero sem WhatsApp e falha DEFINITIVA: reenviar nunca vai funcionar.
+      // Sinaliza ao backend para nao reenfileirar (ver atualizarStatusFila).
+      permanente: motivo === 'numero_invalido',
       etapa: 'envio'
     };
   }
@@ -858,13 +1105,10 @@ async function processarFilaUmaRodada() {
           metadata: { categoria: 'conexao', consecutiveSkips, backoffMs: atraso }
         });
       }
-      // Auto-stop apenas como salvaguarda final; continua recuperavel se as
-      // credenciais voltarem antes do limite.
+      // A fila NUNCA se auto-desliga: entra em pausa visivel e retoma sozinha.
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_credenciais',
+          'Fila de mensagens pausada: aguardando credenciais do MyZap. Ela retoma sozinha.');
       }
       return;
     }
@@ -883,10 +1127,8 @@ async function processarFilaUmaRodada() {
         });
       }
       if (consecutiveSkips >= MAX_CONSECUTIVE_SKIPS) {
-        warn(`[FilaMyZap] Auto-stop: ${MAX_CONSECUTIVE_SKIPS} skips consecutivos (MyZap down)`, {
-          metadata: { categoria: 'conexao', area: 'whatsappQueueWatcher' }
-        });
-        stopWhatsappQueueWatcher();
+        entrarEmPausa('aguardando_myzap',
+          'Fila de mensagens pausada: aguardando o MyZap voltar a responder. Ela retoma sozinha.');
       }
       return;
     }
@@ -900,10 +1142,36 @@ async function processarFilaUmaRodada() {
     }
     consecutiveSkips = 0;
     limparBackoff();
+    sairDaPausa();
+
+    // Ritmo humano (janela de horario / teto diario / espacamento). Fica inerte
+    // enquanto o Hub nao mandar o bloco "ritmo" — ver core/api/ritmoConfig.js.
+    const ritmo = await refreshRitmoIfStale();
+
+    if (!dentroDaJanela(ritmo)) {
+      info('[FilaMyZap] Fora da janela de horario de envio — ciclo ocioso', {
+        metadata: { categoria: 'fila', horarioInicio: ritmo.horarioInicio, horarioFim: ritmo.horarioFim }
+      });
+      return;
+    }
+
+    if (!dentroDoTetoDiario(ritmo)) {
+      info('[FilaMyZap] Teto diario de envios atingido — ciclo ocioso', {
+        metadata: { categoria: 'fila', tetoDiario: ritmo.tetoDiario, enviosHoje: getEnviosHoje() }
+      });
+      return;
+    }
 
     const pendentes = await listarPendentesMyZap();
     ultimosPendentes = Array.isArray(pendentes) ? pendentes : [];
-    const lote = pendentes.filter((m) => String(m?.status || '').toLowerCase() !== 'enviado');
+    let lote = pendentes.filter((m) => String(m?.status || '').toLowerCase() !== 'enviado');
+
+    // Com ritmo configurado, reivindica so o que cabe no ciclo (o resto fica
+    // pendente e vem no proximo tick, em vez de estourar o 'processando').
+    const limiteCiclo = calcularLimiteCiclo();
+    if (lote.length > limiteCiclo) {
+      lote = lote.slice(0, limiteCiclo);
+    }
 
     ultimoLote = lote.length;
     ultimaExecucaoEm = new Date().toISOString();
@@ -931,9 +1199,24 @@ async function processarFilaUmaRodada() {
     // rodada (sem spam), com o motivo/idfila do primeiro erro e o total.
     let errosNaRodada = 0;
     let primeiroErroRodada = null;
+    // Espacamento entre mensagens: aplicado ANTES da 2a em diante (nunca atrasa a
+    // primeira do lote). Vale 0 enquanto nao houver ritmo configurado.
+    let primeiraDoLote = true;
 
     for (const mensagem of lote) {
       if (!ativo) break;
+
+      if (!primeiraDoLote) {
+        const espera = randomDelayMs();
+        if (espera > 0) {
+          debug('[FilaMyZap] Aguardando ritmo antes da proxima mensagem', {
+            metadata: { categoria: 'envio', esperaMs: espera }
+          });
+          await sleep(espera);
+          if (!ativo) break;
+        }
+      }
+      primeiraDoLote = false;
 
       let novoStatus = 'erro';
       // Detalhe rico enviado ao backend apenas em caso de erro (retrocompativel).
@@ -957,6 +1240,8 @@ async function processarFilaUmaRodada() {
 
         if (envio.ok) {
           messageId = extrairMessageId(envio.body);
+          // Conta para o teto diario (so envio efetivo; skip/erro nao contam).
+          if (!envio.skipped) registrarEnvioHoje();
           info('[FilaMyZap] Mensagem enviada com sucesso', {
             metadata: { categoria: 'envio', idfila: mensagem?.idfila, idfilial: filaIdfilial || null, messageId }
           });
@@ -976,6 +1261,7 @@ async function processarFilaUmaRodada() {
               idfila: mensagem?.idfila,
               idfilial: filaIdfilial || null,
               motivo: detalheErro.motivo,
+              permanente: detalheErro.permanente === true,
               codigo_http: detalheErro.codigo_http,
               etapa: detalheErro.etapa,
               erro: detalheErro.erro,
@@ -1119,6 +1405,13 @@ async function startWhatsappQueueWatcher() {
     return { status: 'error', message: 'Configuracao do backend/MyZap incompleta.' };
   }
 
+  // 1x por boot, ANTES de validar: uma sessao orfa competindo por Chromium
+  // zumbifica a sessao boa, e a validacao abaixo herdaria esse estado ruim.
+  if (!orfasLimpasNesteBoot) {
+    orfasLimpasNesteBoot = true;
+    await limparSessoesOrfas(config.sessionKey);
+  }
+
   const myzapDisponivel = await validarDisponibilidadeMyZap(
     config.sessionKey,
     config.sessionName,
@@ -1163,6 +1456,7 @@ function stopWhatsappQueueWatcher() {
 
   ativo = false;
   processando = false;
+  motivoPausa = null;
 
   info('Watcher da fila MyZap parado', {
     metadata: { area: 'whatsappQueueWatcher' }
@@ -1208,6 +1502,7 @@ function resetQueueErrorCount() {
 }
 
 module.exports = {
+  setQueueNotifier,
   listarPendentesMyZap,
   getUltimosEnviosMyZap,
   getUltimosPendentesMyZap,
