@@ -17,8 +17,21 @@ const { autoUpdater } = require('electron-updater');
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-compositing');
 const path = require('path');
+
+// ⚠️ ANTES de qualquer require do core: vários módulos de lá fazem `new Store()` no topo do
+// arquivo, e o Store cria um config.json vazio na pasta nova — o que faria a migração
+// abaixo achar que já havia configuração e não copiar nada. Ver core/migracaoIdentidade.js.
+const { migrarConfiguracaoDaIdentidadeAntiga } = require('./core/migracaoIdentidade');
+const resultadoMigracaoIdentidade = migrarConfiguracaoDaIdentidadeAntiga(app);
+
 const Store = require('electron-store');
 const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
+
+if (resultadoMigracaoIdentidade.migrado) {
+  info('Configuração migrada da identidade antiga (gerenciador-myzap)', {
+    metadata: { area: 'boot', de: resultadoMigracaoIdentidade.de, para: resultadoMigracaoIdentidade.para }
+  });
+}
 const {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,

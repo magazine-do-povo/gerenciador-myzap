@@ -54,4 +54,46 @@
     ; remocao forcada da pasta + limpeza da entrada orfa no registro.
     ExecShellWait "runas" "$SYSDIR\cmd.exe" '/c if exist "$1\${UNINSTALL_FILENAME}" (start "" /wait "$1\${UNINSTALL_FILENAME}" /S _?=$1) & rd /s /q "$1" & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" /f /reg:64 & reg delete "HKLM\Software\Microsoft\Windows\CurrentVersion\Uninstall\${UNINSTALL_APP_KEY}" /f /reg:32' SW_HIDE
   ${EndIf}
+
+  ; ------------------------------------------------------------------------
+  ; Identidade antiga (17/09/2026): ate a v1.8.0 este app usava o appId da
+  ; JZTech (com.jvtech.myzap) e se instalava na pasta "gerenciador-myzap".
+  ; Com appId proprio o Windows passa a ver DOIS produtos — e a loja ficaria
+  ; com dois atalhos "Gerenciador MyZap", um deles morto. Remove a instalacao
+  ; per-user da identidade antiga antes de instalar esta.
+  ;
+  ; ⚠️ Per-USER (HKCU), sem UAC: desde a v1.7 a instalacao e por usuario. E so
+  ; a PASTA DO APP sai — a configuracao fica em %APPDATA% e o MyZap local
+  ; (sessao do WhatsApp) em %LOCALAPPDATA%\gerenciador-myzap, intocados. Quem
+  ; leva a configuracao para a pasta nova e core/migracaoIdentidade.js.
+  ; ------------------------------------------------------------------------
+  StrCpy $5 "com.jvtech.myzap"
+  SetRegView 64
+  ReadRegStr $6 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" "UninstallString"
+  ReadRegStr $7 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" "InstallLocation"
+  ${If} $6 == ""
+    SetRegView 32
+    ReadRegStr $6 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" "UninstallString"
+    ReadRegStr $7 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" "InstallLocation"
+    SetRegView 64
+  ${EndIf}
+
+  ${If} $7 == ""
+  ${AndIf} $6 != ""
+    StrCpy $8 $6
+    StrCpy $3 $8 1
+    ${If} $3 == '"'
+      StrCpy $8 $8 "" 1
+      StrLen $4 $8
+      IntOp $4 $4 - 1
+      StrCpy $8 $8 $4
+    ${EndIf}
+    ${GetParent} $8 $7
+  ${EndIf}
+
+  ${If} $7 != ""
+    DetailPrint "Removendo a versao anterior (identidade antiga)..."
+    nsExec::ExecToLog 'cmd.exe /c if exist "$7\${UNINSTALL_FILENAME}" (start "" /wait "$7\${UNINSTALL_FILENAME}" /S _?=$7) & rd /s /q "$7" & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" /f /reg:64 & reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\$5" /f /reg:32'
+    Pop $9
+  ${EndIf}
 !macroend
