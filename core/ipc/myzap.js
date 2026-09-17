@@ -14,6 +14,7 @@ const verifyRealStatus = require('../myzap/api/verifyRealStatus');
 const sendTestMessage = require('../myzap/api/sendTestMessage');
 const updateIaConfig = require('../myzap/api/updateIaConfig');
 const { iniciarMyZap, onMyZapChildExit } = require('../myzap/iniciarMyZap');
+const { resolveDataDir } = require('../myzap/enginePaths');
 const {
     prepareAutoConfig,
     getAutoConfigDebugSnapshot,
@@ -669,7 +670,7 @@ function registerMyZapHandlers(ipcMain) {
         try {
             const { TOKEN = '', OPENAI_API_KEY = '', EMAIL_TOKEN = '' } = secrets || {};
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const localEnvPath = myzapDir ? path.join(myzapDir, '.env') : '';
+            const localEnvPath = myzapDir ? path.join(resolveDataDir(myzapDir), '.env') : '';
             const targets = [];
             if (localEnvPath && fs.existsSync(localEnvPath)) {
                 targets.push(localEnvPath);
@@ -726,7 +727,7 @@ function registerMyZapHandlers(ipcMain) {
     ipcMain.handle('myzap:readEnvSecrets', async () => {
         try {
             const myzapDir = String(envStore.get('myzap_diretorio') || '').trim();
-            const localEnv = myzapDir ? path.join(myzapDir, '.env') : '';
+            const localEnv = myzapDir ? path.join(resolveDataDir(myzapDir), '.env') : '';
                         const storeEnv = String(envStore.get('myzap_envContent') || '');
             let envContent = '';
             if (localEnv && fs.existsSync(localEnv)) {

@@ -293,6 +293,49 @@ async function reinstallPreservingData(options = {}) {
         filaEstavaAtiva = pararFilaSeAtiva();
         await stopMyZapAndFreePort({ timeoutMs: 15000 });
 
+        // ── Runtime Pack primeiro (17/09/2026) ─────────────────────────────
+        // O caminho legado daqui para baixo baixa o código por SHA fixo no
+        // codeload e roda o gerenciador de pacotes na máquina da loja — quando
+        // o commit pinado some ou o destino tem sobra de configuração, a loja
+        // fica SEM motor. O pack preserva os dados por construção (moram em
+        // `myzap-data`) e o `applyPackZip` migra sessão e banco do layout
+        // legado sozinho.
+        //
+        // ⚠️ O supervisor chega aqui no degrau 3 — este gancho serve os dois.
+        try {
+            // eslint-disable-next-line global-require
+            const enginePack = require('./enginePack');
+            const viaPack = await enginePack.installFromBestSourceUnlocked({
+                onProgress: reportProgress
+            });
+
+            if (viaPack && viaPack.status === 'success') {
+                religarFila(filaEstavaAtiva);
+
+                info('reinstallPreservingData: motor reinstalado pelo Runtime Pack', {
+                    metadata: { area: 'updateMyZap', dir, version: viaPack.version || null }
+                });
+
+                return {
+                    status: 'success',
+                    message: `MyZap reinstalado do Runtime Pack (v${viaPack.version || '?'}).`
+                };
+            }
+
+            if (viaPack) {
+                warn('reinstallPreservingData: pack nao concluiu; seguindo pelo fluxo legado', {
+                    metadata: { area: 'updateMyZap', viaPack }
+                });
+            }
+        } catch (packErr) {
+            warn('reinstallPreservingData: erro no Runtime Pack; seguindo pelo fluxo legado', {
+                metadata: {
+                    area: 'updateMyZap',
+                    error: packErr && packErr.message ? packErr.message : String(packErr)
+                }
+            });
+        }
+
         // 1) resgatar dados (sobras de tentativas anteriores tambem contam:
         // se ja existe um rescue de uma rodada que morreu no meio, PRESERVA)
         if (!fs.existsSync(rescue)) {

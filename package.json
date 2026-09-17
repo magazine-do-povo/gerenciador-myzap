@@ -12,6 +12,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "nodemon --exec electron .",
+    "test": "node test/migracaoIdentidade.test.js && node test/enginePaths.test.js",
     "build:icons": "powershell -ExecutionPolicy Bypass -File scripts/generate-windows-icon.ps1",
     "build:wincodesign": "powershell -ExecutionPolicy Bypass -File scripts/prepare-wincodesign-cache.ps1",
     "prepack": "pnpm run build:icons && pnpm run build:wincodesign",
