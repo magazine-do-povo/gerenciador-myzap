@@ -1,7 +1,7 @@
 {
   "name": "gerenciador-myzap-mdp",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
