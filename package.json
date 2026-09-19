@@ -1,7 +1,7 @@
 {
-  "name": "gerenciador-myzap",
+  "name": "gerenciador-myzap-mdp",
   "description": "Gerenciador MyZap — disparo automático de mensagens via WhatsApp",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "main": "main.js",
   "author": {
     "name": "JZ-TECH-SYS",
@@ -12,6 +12,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "nodemon --exec electron .",
+    "test": "node test/migracaoIdentidade.test.js && node test/enginePaths.test.js",
     "build:icons": "powershell -ExecutionPolicy Bypass -File scripts/generate-windows-icon.ps1",
     "build:wincodesign": "powershell -ExecutionPolicy Bypass -File scripts/prepare-wincodesign-cache.ps1",
     "prepack": "pnpm run build:icons && pnpm run build:wincodesign",
@@ -49,8 +50,8 @@
     ]
   },
   "build": {
-    "appId": "com.jvtech.myzap",
-    "productName": "gerenciador-myzap",
+    "appId": "com.magazinedopovo.myzap",
+    "productName": "gerenciador-myzap-mdp",
     "asarUnpack": [
       "node_modules/pnpm/**"
     ],
@@ -62,7 +63,7 @@
         "nsis"
       ],
       "icon": "assets/icon.ico",
-      "artifactName": "gerenciador-myzap-Setup-${version}.${ext}"
+      "artifactName": "gerenciador-myzap-mdp-Setup-${version}.${ext}"
     },
     "linux": {
       "target": [
@@ -70,9 +71,9 @@
         "deb"
       ],
       "icon": "assets/icon.png",
-      "artifactName": "gerenciador-myzap-${version}.${ext}",
+      "artifactName": "gerenciador-myzap-mdp-${version}.${ext}",
       "category": "Utility",
-      "maintainer": "JZ-TECH-SYS <contato@jztechsys.com>"
+      "maintainer": "Magazine do Povo <ti@magazinedopovo.com.br>"
     },
     "nsis": {
       "oneClick": true,
@@ -80,7 +81,7 @@
       "runAfterFinish": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "Gerenciador MyZap",
+      "shortcutName": "Gerenciador MyZap - Magazine do Povo",
       "installerIcon": "assets/icon.ico",
       "uninstallerIcon": "assets/icon.ico",
       "installerHeaderIcon": "assets/icon.ico",

@@ -17,8 +17,21 @@ const { autoUpdater } = require('electron-updater');
 app.disableHardwareAcceleration();
 app.commandLine.appendSwitch('disable-gpu-compositing');
 const path = require('path');
+
+// ⚠️ ANTES de qualquer require do core: vários módulos de lá fazem `new Store()` no topo do
+// arquivo, e o Store cria um config.json vazio na pasta nova — o que faria a migração
+// abaixo achar que já havia configuração e não copiar nada. Ver core/migracaoIdentidade.js.
+const { migrarConfiguracaoDaIdentidadeAntiga } = require('./core/migracaoIdentidade');
+const resultadoMigracaoIdentidade = migrarConfiguracaoDaIdentidadeAntiga(app);
+
 const Store = require('electron-store');
 const { info, warn, error, abrirPastaLogs } = require('./core/utils/logger');
+
+if (resultadoMigracaoIdentidade.migrado) {
+  info('Configuração migrada da identidade antiga (gerenciador-myzap)', {
+    metadata: { area: 'boot', de: resultadoMigracaoIdentidade.de, para: resultadoMigracaoIdentidade.para }
+  });
+}
 const {
   startWhatsappQueueWatcher,
   stopWhatsappQueueWatcher,
@@ -55,6 +68,11 @@ const {
   forceRepair
 } = require('./core/myzap/supervisor');
 const { checkAndUpdateIfNeeded } = require('./core/myzap/updateChecker');
+const {
+  checkAndUpdatePack,
+  cleanupLeftovers: cleanupPackLeftovers,
+  getInstalledPackVersion
+} = require('./core/myzap/enginePack');
 const { runPostUpdateRepairIfNeeded } = require('./core/myzap/firstRunRepair');
 const { offerPerUserMigration, redirectToPerUserIfInstalled } = require('./core/migracaoInstalador');
 const { ensureMyZapReadyAndStart, refreshRemoteConfigAndSyncIa } = require('./core/myzap/autoConfig');
@@ -583,6 +601,35 @@ async function updateMyZapNow() {
     }
 
     if (result?.status === 'success') {
+      // ── Runtime Pack primeiro (17/09/2026) ───────────────────────────────
+      // magazine-do-povo/myzap publica, por tag, um zip pronto com manifest e
+      // sha256. Atualizar por ele é trocar de pasta com rollback, em vez de
+      // baixar por commit SHA e rodar o gerenciador de pacotes na loja.
+      // Sem release no canal, `no_source` devolve o fluxo legado inteiro.
+      const packResult = await checkAndUpdatePack();
+      if (packResult?.status === 'success' || packResult?.status === 'up_to_date'
+          || packResult?.status === 'busy') {
+        toast(packResult.message || (packResult.status === 'success'
+          ? 'MyZap atualizado para a versao mais recente!'
+          : packResult.status === 'busy'
+            ? 'Outra operacao do MyZap em andamento. Tente novamente em instantes.'
+            : 'MyZap ja esta na versao mais recente. Configuracoes reaplicadas.'));
+
+        if (isMyZapModoLocal()) {
+          enviarStatusMyZap().catch((err) => {
+            myzapWarn('Falha ao enviar status apos atualizacao do MyZap pelo pack', {
+              metadata: { error: err }
+            });
+          });
+        }
+
+        return;
+      }
+
+      myzapInfo('Runtime Pack sem release utilizavel; caindo no update por commit SHA', {
+        metadata: { area: 'update', packResult }
+      });
+
       // update real de CODIGO por commit SHA (manual; com o usuario presente)
       const codeResult = await checkAndUpdateIfNeeded();
       if (codeResult?.status === 'success' && codeResult?.upToDate) {
@@ -808,8 +855,15 @@ if (!hasSingleInstanceLock) {
 
     configureAutoLaunch();
 
+    // Sobras da última troca de motor (<motor>.old / .staging). Só apaga o que
+    // a troca já confirmou — é o espaço do pack anterior, que não serve mais.
+    try { cleanupPackLeftovers(); } catch (_e) { /* melhor esforco */ }
+
     info('Aplicacao pronta para uso', {
-      metadata: { ambiente: app.isPackaged ? 'producao' : 'desenvolvimento' }
+      metadata: {
+        ambiente: app.isPackaged ? 'producao' : 'desenvolvimento',
+        motor: (() => { try { return getInstalledPackVersion() || 'legado/sem manifest'; } catch (_e) { return null; } })()
+      }
     });
 
     // Instalacao perMachine antiga: baixa o Setup novo e oferece a migracao

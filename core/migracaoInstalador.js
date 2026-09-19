@@ -30,10 +30,36 @@ function isRunningFromProgramFiles() {
         && /\\Program Files( \(x86\))?\\/i.test(String(process.execPath || ''));
 }
 
-function getPerUserExePath() {
+/**
+ * O exe da instalacao por usuario.
+ *
+ * ⚠️ Duas pastas de proposito (17/09/2026): o app ganhou identidade propria
+ * (`gerenciador-myzap-mdp`) porque ate entao dividia `appId` e `name` com o gerenciador da
+ * JZTech — e um instalava por cima do outro. Durante a transicao a maquina pode ter a
+ * instalacao NOVA ou a ANTIGA; procurar so a nova faria o redirecionamento de
+ * Program Files parar de funcionar para quem ainda nao atualizou.
+ */
+function getPerUserExeCandidates() {
     const localAppData = process.env.LOCALAPPDATA
         || path.join(os.homedir(), 'AppData', 'Local');
-    return path.join(localAppData, 'Programs', 'gerenciador-myzap', 'gerenciador-myzap.exe');
+
+    return [
+        path.join(localAppData, 'Programs', 'gerenciador-myzap-mdp', 'gerenciador-myzap-mdp.exe'),
+        path.join(localAppData, 'Programs', 'gerenciador-myzap', 'gerenciador-myzap.exe')
+    ];
+}
+
+function getPerUserExePath() {
+    const candidatos = getPerUserExeCandidates();
+    for (const exe of candidatos) {
+        try {
+            if (fs.existsSync(exe)) {
+                return exe;
+            }
+        } catch (_e) { /* tenta o proximo */ }
+    }
+
+    return candidatos[0];
 }
 
 function isPerUserInstalled() {

@@ -13,6 +13,8 @@ const {
   waitForPortFree,
 } = require('./processUtils');
 const { transition } = require('./stateMachine');
+const { isPackEngine, getEngineNodeExe, resolveDataDir } = require('./enginePaths');
+const { puppeteerCacheEnv } = require('./localSnapshot');
 const { probeMyZapIdentity } = require('./api/myzapHealthcheck');
 
 function getErrorMessage(error) {
@@ -94,17 +96,75 @@ function buildPackageScriptRunner(baseRunner, scriptName) {
   };
 }
 
+/**
+ * Runner do Runtime Pack (v3) — o motor traz o PRÓPRIO node.exe.
+ *
+ * ⚠️ Dois detalhes que não são estética (17/09/2026):
+ *
+ * 1. **O node é o do pack**, não o do sistema: o `sqlite3` vem compilado no build com a ABI
+ *    daquele Node. Subir com outro node quebra o banco do motor.
+ * 2. **O CWD é a pasta de DADOS** (`myzap-data` ao lado do motor), não a do código. É o que
+ *    deixa `.env`, sqlite e a sessão do WhatsApp fora da pasta que a atualização troca —
+ *    sem isso o update leva a sessão junto e a loja relê o QR toda vez.
+ *
+ * Instalação legada (sem pack) devolve `null` e nada muda.
+ */
+function resolvePackStartRunner(dirPath) {
+  try {
+    if (!isPackEngine(dirPath)) {
+      return null;
+    }
+
+    const nodeExe = getEngineNodeExe(dirPath);
+    const entryFile = path.join(dirPath, 'index.js');
+    if (!nodeExe || !fs.existsSync(nodeExe) || !fs.existsSync(entryFile)) {
+      return null;
+    }
+
+    const dataDir = resolveDataDir(dirPath);
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    info('Runtime Pack detectado: subindo com o Node do proprio motor', {
+      metadata: { area: 'iniciarMyZap', nodeExe, dataDir, dirPath },
+    });
+
+    return {
+      command: nodeExe,
+      args: [entryFile],
+      shell: false,
+      cwd: dataDir,
+      env: { ...buildCleanEnvForChild(), ...puppeteerCacheEnv(dirPath) },
+      source: 'runtime-pack',
+      scriptName: 'pack'
+    };
+  } catch (e) {
+    warn('Nao foi possivel montar o runner do Runtime Pack; seguindo pelos runners de sempre', {
+      metadata: { area: 'iniciarMyZap', dirPath, error: e && e.message ? e.message : String(e) },
+    });
+
+    return null;
+  }
+}
+
 async function resolveMyZapStartRunners(dirPath, options = {}) {
+  const runners = [];
+
+  // Pack primeiro: quando existe, é o caminho certo — e os runners de script
+  // abaixo continuam como rede de segurança.
+  const packRunner = resolvePackStartRunner(dirPath);
+  if (packRunner) {
+    runners.push(packRunner);
+  }
+
   const packageJson = readMyZapPackageJson(dirPath);
   const scripts = (packageJson && packageJson.scripts) || {};
   const preferredOrder = ['start', 'dev'];
   const scriptCandidates = preferredOrder.filter((scriptName) => typeof scripts[scriptName] === 'string' && scripts[scriptName].trim());
 
   if (!scriptCandidates.length) {
-    return [];
+    return runners;
   }
 
-  const runners = [];
   if (scriptCandidates.includes('start')) {
     const directRunner = resolveDirectMyZapStartRunner(dirPath, packageJson);
     if (directRunner) {
@@ -468,7 +528,8 @@ async function iniciarMyZap(dirPath, options = {}) {
       });
 
       const child = spawn(startRunner.command, startRunner.args, {
-        cwd: dirPath,
+        // O pack roda com CWD na pasta de DADOS; os runners de script, na do código.
+        cwd: startRunner.cwd || dirPath,
         shell: startRunner.shell,
         env: startRunner.env,
         detached: false,

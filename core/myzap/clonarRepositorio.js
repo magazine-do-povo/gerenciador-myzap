@@ -766,6 +766,54 @@ async function clonarRepositorio(dirPath, envContent, reinstall = false, options
       }
     }
 
+    // ── Runtime Pack primeiro (17/09/2026) ─────────────────────────────────
+    // O repo magazine-do-povo/myzap publica, por tag, um zip PRONTO (codigo +
+    // node_modules + Chromium + Node embutido + semente do banco) com manifest
+    // e sha256. Instalar por ele troca "clonar + rodar pnpm na maquina da loja"
+    // por "baixar artefato e trocar de pasta, com rollback" — e foi o pnpm no
+    // cliente que quebrou instalacoes na v2.0.x.
+    //
+    // ⚠️ `skipStart` fica FORA: e o fluxo legado de reinstalar preservando os
+    // dados DENTRO do motor, e o pack usa outro layout (dados em myzap-data\).
+    // Misturar os dois numa mesma rodada e o caminho para perder sessao.
+    //
+    // Falhou? Cai no caminho de sempre (git/zip + pnpm), que continua inteiro.
+    if (!options.skipStart) {
+      try {
+        // eslint-disable-next-line global-require
+        const enginePack = require('./enginePack');
+        const viaPack = await enginePack.installFromBestSourceUnlocked({
+          onProgress: reportProgress,
+          engineDir: dirPath,
+        });
+
+        if (viaPack && viaPack.status === 'success') {
+          info('MyZap instalado pelo Runtime Pack', {
+            metadata: { area: 'clonarRepositorio', dirPath, version: viaPack.version },
+          });
+
+          return {
+            status: 'success',
+            message: `MyZap instalado do Runtime Pack e iniciado (v${viaPack.version || '?'}).`,
+          };
+        }
+
+        if (viaPack) {
+          warn('Runtime Pack nao concluiu; seguindo pelo caminho de rede', {
+            metadata: { area: 'clonarRepositorio', dirPath, viaPack },
+          });
+        }
+      } catch (packErr) {
+        warn('Erro no Runtime Pack; seguindo pelo caminho de rede', {
+          metadata: {
+            area: 'clonarRepositorio',
+            dirPath,
+            error: packErr && packErr.message ? packErr.message : String(packErr),
+          },
+        });
+      }
+    }
+
     transition('cloning_repo', { message: 'Obtendo codigo do MyZap...', dirPath });
 
     try {

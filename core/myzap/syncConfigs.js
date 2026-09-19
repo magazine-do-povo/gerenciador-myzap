@@ -3,6 +3,7 @@ const path = require('path');
 const Store = require('electron-store');
 const { info, warn, error } = require('./myzapLogger');
 const { getOrCreateLocalToken, buildEnvContent } = require('./envTemplate');
+const { resolveDataDir } = require('./enginePaths');
 
 const store = new Store();
 
@@ -24,7 +25,13 @@ function syncMyZapConfigs(dirPath, options = {}) {
         const overwriteDb = Boolean(options.overwriteDb);
         const envContent = String(options.envContent || '').trim();
 
-        const envDest = path.join(dirPath, '.env');
+        // .env e banco moram no diretório de DADOS: no pack é o `myzap-data` ao lado
+        // (a troca de motor nunca encosta neles); no legado `resolveDataDir` devolve o
+        // próprio dirPath e o comportamento antigo fica idêntico.
+        const dataDir = resolveDataDir(dirPath);
+        fs.mkdirSync(dataDir, { recursive: true });
+
+        const envDest = path.join(dataDir, '.env');
         // Sem conteudo explicito, gera o template em codigo com o TOKEN unico
         // desta maquina (o antigo .env comitado com TOKEN compartilhado morreu).
         const envToWrite = envContent || buildEnvContent({
