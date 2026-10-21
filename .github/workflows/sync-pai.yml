@@ -1,0 +1,278 @@
+name: Sincronizar com o pai (JZ-TECH-SYS/gerenciadorMyzap)
+
+# Leva as atualizações do gerenciador da JZ Tech (o PAI) às cópias das outras empresas (os FILHOS),
+# sempre por um PR que só o dono mescla. Guia: docs/familia-gerenciador-myzap.md, no pai.
+#
+#   JZ-TECH-SYS/gerenciadorMyzap              PAI (público). Correção comum nasce aqui, por PR.
+#    ├──► magazine-do-povo/gerenciador-myzap   filho (público)
+#    └──► celularis/gerenciador-myzap          filho (privado)
+#
+# ⚠️ MESCLAR O PR = PUBLICAR NAS LOJAS. Em cada filho o release.yml roda em QUALQUER push na main:
+# compila o instalador, publica a release v<version do package.json> e o auto-update leva o app a
+# todos os PCs da empresa. Por isso este robô NUNCA mescla: só abre (ou atualiza) o PR e marca o
+# @joaosn. Push e PR feitos com o GITHUB_TOKEN não disparam workflow nenhum; o merge feito pelo dono
+# dispara, e é a publicação. Mesclar sem publicar: [skip ci] na mensagem do merge.
+#
+# Roda SÓ nos filhos (o `if` do job); no pai o arquivo existe para chegar aos filhos pela própria
+# sincronização. Todo dia de madrugada (o GitHub atrasa horas; nada depende do horário) ou na hora:
+#   gh workflow run sync-pai.yml -R <org>/<repo>
+#
+# 1. Busca a main do pai por https (é público: sem chave, sem secret). Se a main do filho já a
+#    contém: "em dia com o pai", fecha a issue sync-pai, se houver, e sai.
+# 2. Merge do pai no branch sync/pai-<sha>, que parte da main ou do PR de sincronização ainda aberto
+#    (o que o dono já empurrou nele não se perde). Três regras fixas da família:
+#    - fim de linha: o pai está em CRLF desde 03/06/2026 e os filhos em LF. Sem -X ignore-cr-at-eol,
+#      todo arquivo mexido dos dois lados viraria conflito só por isso;
+#    - a linha "version" do package.json é sempre a do filho (numeração e tag de release próprias);
+#    - .github/workflows/ fica como está no filho: o GITHUB_TOKEN não pode gravar workflow, e o
+#      release.yml é de cada empresa. O que o pai mudou ali vai listado no PR, para fazer à mão.
+#    Qualquer outro conflito: issue sync-pai marcando o @joaosn, com os arquivos, e nada é empurrado.
+# 3. Verificação offline e sem custo: node --check nos .js que o merge muda e o `npm test` do filho,
+#    se houver (sem instalar dependência; sem electron-builder, o instalador é Windows). Falhou:
+#    issue, e nada é empurrado.
+# 4. Empurra o branch e abre (ou atualiza) o PR com o resumo, o ALERTA DE MARCA (linhas novas com
+#    marca ou canal da JZ Tech: appId com.jvtech.myzap, publish e updates em JZ-TECH-SYS, "JZ Tech")
+#    e o lembrete de subir a versão. O PR de sincronização anterior é fechado como substituído; o PR
+#    que o dono fechou sem mesclar não é reaberto (o próximo vem quando o pai andar).
+on:
+  schedule:
+    - cron: "47 6 * * *"   # 03:47 em Brasília (UTC-3, sem horário de verão)
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-pai
+  cancel-in-progress: false
+
+jobs:
+  sincronizar:
+    if: github.repository != 'JZ-TECH-SYS/gerenciadorMyzap'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write        # empurrar o branch sync/pai-<sha> (nunca a main)
+      pull-requests: write   # abrir, atualizar e fechar o PR substituído (nunca mesclar)
+      issues: write          # issue sync-pai quando a sincronização trava
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      PAI: JZ-TECH-SYS/gerenciadorMyzap
+      DOC: https://github.com/JZ-TECH-SYS/gerenciadorMyzap/blob/main/docs/familia-gerenciador-myzap.md
+      RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      MARCAS: 'jz[-_ ]?tech|jvtech|gerenciadorMyzap'   # marca/canal do pai, sem diferenciar maiúsculas
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Buscar o pai e fazer o merge
+        id: pai
+        run: |
+          set -euo pipefail
+          git fetch -q --no-tags "https://github.com/$PAI.git" +refs/heads/main:refs/remotes/pai/main
+          echo buscou=1 >> "$GITHUB_OUTPUT"
+          sha=$(git rev-parse pai/main)
+          curto=${sha:0:7}
+          printf 'sha=%s\ncurto=%s\n' "$sha" "$curto" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor pai/main origin/main; then
+            echo estado=em-dia >> "$GITHUB_OUTPUT"
+            echo "em dia com o pai ($curto)" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          ramo=sync/pai-$curto
+          echo "ramo=$ramo" >> "$GITHUB_OUTPUT"
+          fechado=$(gh pr list --head "$ramo" --state closed --json number --jq '.[0].number // empty')
+          if [ -n "$fechado" ]; then
+            echo estado=recusado >> "$GITHUB_OUTPUT"
+            echo "o PR #$fechado deste commit do pai ($curto) foi fechado sem mesclar: não reabro" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          conflito() {
+            { echo estado=conflito; echo 'arquivos<<FIM'; git diff --name-only --diff-filter=U; echo FIM; } >> "$GITHUB_OUTPUT"
+            git merge --abort
+            exit 0
+          }
+          versao_do_filho() {   # refaz o merge do package.json com a "version" do pai trocada pela do filho
+            local d s
+            d=$(mktemp -d)
+            for s in 1:base 2:filho 3:pai; do git show ":${s%%:*}:package.json" > "$d/${s#*:}.json" 2>/dev/null || return 0; done
+            node -e '
+              const fs = require("fs");
+              const [filho, ...outros] = process.argv.slice(1);
+              const v = JSON.parse(fs.readFileSync(filho, "utf8")).version;
+              for (const f of outros) fs.writeFileSync(f, fs.readFileSync(f, "utf8").replace(/("version"\s*:\s*")[^"]*"/, `$1${v}"`));
+            ' "$d/filho.json" "$d/base.json" "$d/pai.json" || return 0
+            git merge-file -q "$d/filho.json" "$d/base.json" "$d/pai.json" || return 0
+            cp "$d/filho.json" package.json
+            git add package.json
+          }
+          anterior=$(gh pr list --base main --state open --json headRefName --jq '[.[].headRefName | select(startswith("sync/pai-"))][0] // empty')
+          base=origin/main
+          if git rev-parse -q --verify "origin/$ramo" >/dev/null; then base="origin/$ramo"   # um run anterior já empurrou
+          elif [ -n "$anterior" ]; then base="origin/$anterior"; fi                          # continua do PR aberto
+          git switch -q -C "$ramo" "$base"
+          git merge -q --no-edit -X ignore-cr-at-eol origin/main || conflito   # nada a fazer quando o branch é novo
+          antes=$(git rev-parse HEAD)
+          msg="chore(sync): sincroniza com o pai $PAI ($curto)"
+          if ! git merge -q --no-ff --no-edit -X ignore-cr-at-eol -m "$msg" pai/main; then
+            versao_do_filho
+            [ -z "$(git diff --name-only --diff-filter=U)" ] || conflito
+            git commit -q -m "$msg"
+          fi
+          if [ -n "$(git diff --name-only "$antes" HEAD -- .github/workflows)" ]; then
+            git restore --source="$antes" --staged --worktree -- .github/workflows
+            git commit -q --amend --no-edit
+          fi
+          echo estado=merge >> "$GITHUB_OUTPUT"
+
+      - name: Verificar (offline, sem custo)
+        id: verifica
+        if: steps.pai.outputs.estado == 'merge'
+        run: |
+          set -euo pipefail
+          echo "node $(node --version)"
+          n=0
+          while IFS= read -r -d '' f; do node --check "$f"; n=$((n + 1)); done \
+            < <(git diff -z --name-only --diff-filter=AM origin/main HEAD -- '*.js')
+          teste=$(node -p 'require("./package.json").scripts?.test || ""')
+          if [ -n "$teste" ]; then npm test; fi
+          printf 'js=%s\nteste=%s\n' "$n" "$teste" >> "$GITHUB_OUTPUT"
+
+      - name: Empurrar e abrir ou atualizar o PR (nunca mesclar)
+        id: pr
+        if: steps.pai.outputs.estado == 'merge'
+        env:
+          RAMO: ${{ steps.pai.outputs.ramo }}
+          SHA: ${{ steps.pai.outputs.sha }}
+          CURTO: ${{ steps.pai.outputs.curto }}
+          JS: ${{ steps.verifica.outputs.js }}
+          TESTE: ${{ steps.verifica.outputs.teste }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          git push -q origin "$RAMO"
+          marcas() { git grep -I -i -E "$MARCAS" "$1" -- . ':!package-lock.json' ':!pnpm-lock.yaml' | sed "s|^$1:||" | sort -u || true; }
+          alerta=$(comm -13 <(marcas origin/main) <(marcas HEAD) | cut -c1-220)
+          n=$(printf '%s' "$alerta" | grep -c . || true)
+          wf=''
+          mudou=$(git diff --name-only "$(git merge-base origin/main pai/main)" pai/main -- .github/workflows)
+          if [ -n "$mudou" ]; then wf=$(git diff --name-only HEAD pai/main -- $mudou); fi
+          versao=$(node -p 'require("./package.json").version')
+          vmain=$(git show origin/main:package.json | node -p 'JSON.parse(require("fs").readFileSync(0, "utf8")).version')
+          corpo=$RUNNER_TEMP/corpo.md
+          {
+            echo "@joaosn: sincronização com o pai [\`$CURTO\`](https://github.com/$PAI/commit/$SHA), aberta pelo robô (\`sync-pai.yml\`, [run]($RUN)). **O robô nunca mescla.**"
+            echo
+            echo '> [!CAUTION]'
+            echo "> **Mesclar este PR = publicar nas lojas.** O \`release.yml\` deste repositório roda no merge, publica a release \`v<version>\` e o auto-update leva o app a todos os PCs da empresa. Antes de mesclar: (1) a \`version\` do \`package.json\` neste branch é \`$versao\` e a da main é \`$vmain\` (o robô nunca traz a do pai): se forem iguais, suba-a, senão os PCs que já estão nessa versão não recebem nada; (2) confira o alerta de marca; (3) teste o instalador no Windows. Mescle com **Create a merge commit**: squash ou rebase cortam a ligação com o pai. Mesclar sem publicar: \`[skip ci]\` na mensagem do merge. Guia: [familia-gerenciador-myzap.md]($DOC)."
+            echo
+            echo '### Alerta de marca'
+            echo
+            if [ "$n" = 0 ]; then
+              echo "Nenhuma linha nova com marca ou canal da JZ Tech (\`$MARCAS\`)."
+            else
+              echo "**$n linha(s) nova(s) com marca ou canal da JZ Tech** (\`$MARCAS\`). Cada uma pode trocar o nome, o appId, o canal de atualização, o canal do motor ou o servidor desta empresa pelos da JZ Tech. Confira uma a uma:"
+              echo
+              echo '```'
+              printf '%s\n' "$alerta" | head -n 80
+              if [ "$n" -gt 80 ]; then echo "… e mais $((n - 80))"; fi
+              echo '```'
+            fi
+            if [ -n "$wf" ]; then
+              echo
+              echo '### Workflows do pai que ficaram de fora'
+              echo
+              echo 'O pai mudou estes arquivos desde a última sincronização e o robô manteve os deste repositório: o `GITHUB_TOKEN` não grava em `.github/workflows/`, e o `release.yml` é de cada empresa.'
+              echo
+              printf '%s\n' "$wf" | sed 's/^/- `/; s/$/`/'
+              echo
+              echo "Para trazer um deles (ex.: um \`sync-pai.yml\` novo), com o seu usuário, neste branch: \`git fetch https://github.com/$PAI.git main && git checkout FETCH_HEAD -- <arquivo>\`, commit e push."
+            fi
+            echo
+            echo '### O que muda'
+            echo
+            git diff --shortstat origin/main HEAD
+            echo
+            echo '<details><summary>Arquivos</summary>'
+            echo
+            echo '```'
+            git diff --name-status origin/main HEAD | head -n 300
+            echo '```'
+            echo '</details>'
+            echo
+            echo '### Verificação (offline)'
+            echo
+            echo "- \`node --check\`: ${JS:-0} arquivo(s) \`.js\` que o merge muda, sem erro."
+            if [ -n "$TESTE" ]; then echo "- \`npm test\`: passou (\`$TESTE\`)."; else echo '- `npm test`: este repositório não tem teste.'; fi
+            echo '- Sem build: o instalador é Windows (electron-builder) e não compila aqui.'
+            echo
+            echo '### Commits do pai que chegam'
+            echo
+            git log --no-merges --max-count=40 --format='- %as `%h` %s' origin/main..pai/main
+          } > "$corpo"
+          titulo="chore(sync): sincroniza com o pai ($CURTO) · mesclar = publicar nas lojas"
+          pr=$(gh pr list --head "$RAMO" --base main --state open --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            url=$(gh pr create --base main --head "$RAMO" --title "$titulo" --body-file "$corpo" --assignee joaosn)
+            pr=${url##*/}
+          else
+            gh pr edit "$pr" --title "$titulo" --body-file "$corpo"
+          fi
+          for velho in $(gh pr list --base main --state open --json number,headRefName --jq ".[] | select(.headRefName | startswith(\"sync/pai-\")) | select(.number != $pr) | .number"); do
+            gh pr close "$velho" --delete-branch --comment "Substituído por #$pr (o pai andou; o #$pr já contém este)."
+          done
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          echo "PR #$pr aberto ou atualizado com o pai ($CURTO); alerta de marca: $n linha(s). O robô não mescla." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Issue sync-pai (abre quando trava, fecha quando volta)
+        if: always()
+        env:
+          BUSCA: ${{ steps.pai.outcome }}
+          BUSCOU: ${{ steps.pai.outputs.buscou }}
+          ESTADO: ${{ steps.pai.outputs.estado }}
+          ARQUIVOS: ${{ steps.pai.outputs.arquivos }}
+          SHA: ${{ steps.pai.outputs.sha }}
+          CURTO: ${{ steps.pai.outputs.curto }}
+          PR: ${{ steps.pr.outputs.pr }}
+          JOB: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          arquivos=$(printf '%s\n' "$ARQUIVOS" | sed '/^$/d; s/^/- `/; s/$/`/')
+          if [ "$BUSCA" = failure ] && [ -z "$BUSCOU" ]; then
+            motivo=acesso
+            texto="Não consegui buscar a main do pai \`$PAI\` por https. Ele continua público? Se ficou privado, o robô precisa de deploy key, como na família wuzapi."
+          elif [ "$ESTADO" = conflito ]; then
+            motivo=conflito
+            texto=$(printf 'O merge do pai (`%s`) deu **conflito** em %s arquivo(s):\n\n%s\n\nNada foi empurrado. Sincronize à mão (seção "Conflito" do guia).' "$CURTO" "$(printf '%s\n' "$arquivos" | grep -c .)" "$arquivos")
+          elif [ "$JOB" != success ]; then
+            motivo=falha
+            texto="A sincronização com o pai (\`${CURTO:-?}\`) falhou fora de conflito: no merge, na verificação (\`node --check\`/\`npm test\`), no push ou no PR. Veja o log do run. \"not permitted to create or approve pull requests\" é a permissão da org (seção \"Permissões\" do guia)."
+          else
+            num=$(gh issue list --label sync-pai --state open --json number --jq '.[0].number // empty' 2>/dev/null || true)
+            if [ -n "$num" ]; then
+              case "$ESTADO" in
+                em-dia) fim="em dia com o pai (\`$CURTO\`)" ;;
+                merge) fim="PR #$PR aberto com o pai (\`$CURTO\`)" ;;
+                *) fim="nada travado com o pai (\`$CURTO\`)" ;;
+              esac
+              gh issue close "$num" --comment "Resolvido: $fim."
+            fi
+            exit 0
+          fi
+          marca="<!-- sync-pai: $SHA $motivo -->"
+          corpo=$(printf '%s\n\n%s\n\n[Run](%s) · como resolver: [familia-gerenciador-myzap.md](%s)\n' "$marca" "$texto" "$RUN" "$DOC")
+          gh label create sync-pai --color d93f0b --description "Sincronização com o pai $PAI" --force >/dev/null
+          num=$(gh issue list --label sync-pai --state open --json number --jq '.[0].number // empty')
+          if [ -z "$num" ]; then
+            gh issue create --title "Sincronização com o pai travada" --label sync-pai --assignee joaosn --body "@joaosn $corpo"
+          elif gh issue view "$num" --json body --jq .body | grep -qF "$marca"; then
+            echo "::warning::já relatado na issue #$num"
+            exit 0
+          else
+            gh issue comment "$num" --body "@joaosn $texto ([run]($RUN))"
+            gh issue edit "$num" --body "$corpo"
+          fi
+          exit 1
